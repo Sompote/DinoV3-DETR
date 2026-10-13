@@ -46,6 +46,14 @@ from rfdetr.inference import ModelContext
 from rfdetr.platform import _PLUS_EXPORTS
 from rfdetr.variants import (
     RFDETRBase,  # DEPRECATED # noqa: F401
+    DinoV3DETRNano,
+    DinoV3DETRSmall,
+    DinoV3DETRMedium,
+    DinoV3DETRLarge,
+    DinoV3DETRSegNano,
+    DinoV3DETRSegSmall,
+    DinoV3DETRSegMedium,
+    DinoV3DETRSegLarge,
     RFDETRKeypointPreview,
     RFDETRLarge,
     RFDETRLargeDeprecated,  # DEPRECATED # noqa: F401
@@ -69,6 +77,14 @@ __all__ = [
     "RFDETRSmall",
     "RFDETRMedium",
     "RFDETRLarge",
+    "DinoV3DETRNano",
+    "DinoV3DETRSmall",
+    "DinoV3DETRMedium",
+    "DinoV3DETRLarge",
+    "DinoV3DETRSegNano",
+    "DinoV3DETRSegSmall",
+    "DinoV3DETRSegMedium",
+    "DinoV3DETRSegLarge",
     "RFDETRSegNano",
     "RFDETRSegSmall",
     "RFDETRSegMedium",

@@ -22,6 +22,19 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 
 EncoderName: TypeAlias = Literal["dinov2_windowed_small", "dinov2_windowed_base", "dinov2_registers_windowed_small"]
+#: DINOv3 encoders, served by ``rfdetr.models.backbone.dinov3.DinoV3Backbone`` through the backbone registry.
+DinoV3EncoderName: TypeAlias = Literal[
+    "dinov3_small",
+    "dinov3_splus",
+    "dinov3_base",
+    "dinov3_large",
+    "dinov3_hplus",
+    "dinov3_windowed_small",
+    "dinov3_windowed_splus",
+    "dinov3_windowed_base",
+    "dinov3_windowed_large",
+    "dinov3_windowed_hplus",
+]
 #: Dataset layout selectable via ``TrainConfig.dataset_file``. The builder registry that resolves each name lives
 #: in ``rfdetr.datasets``; this alias is the single typed source of the accepted names.
 DatasetFile: TypeAlias = Literal["coco", "o365", "roboflow", "yolo", "webdataset"]
@@ -693,6 +706,13 @@ class ModelConfig(BaseConfig):
         device: Target device string (e.g. ``"cuda"``, ``"cpu"``). Auto-detected if not set.
         gradient_checkpointing: Trade compute for memory by checkpointing activations. Defaults
             to ``False``.
+        ordinal_levels: Number of ordered grades for the optional mixture-of-experts ordinal grading head
+            (:class:`rfdetr.models.heads.ordinal.OrdinalMoEHead`). ``0`` (the default) disables the head. When set,
+            the first ``ordinal_levels * ordinal_subclasses`` class ids must be the graded classes, level-major.
+        ordinal_subclasses: Classes per grade inside the graded block. Defaults to ``1``.
+        ordinal_experts: Number of CORN experts mixed by the gate; ``1`` gives a single CORN head. Defaults to ``3``.
+        ordinal_loss_weight: Weight of the grading loss relative to the classification loss. Defaults to ``1.0``.
+        ordinal_fuse: Fuse the grading head into the class scores at inference. Defaults to ``True``.
     """
 
     encoder: EncoderName
@@ -739,6 +759,11 @@ class ModelConfig(BaseConfig):
     num_keypoints_per_class: list[int] = Field(default_factory=list)
     num_decoder_registers: int = 0
     mask_downsample_ratio: int = 4
+    ordinal_levels: int = Field(default=0, ge=0)
+    ordinal_subclasses: int = Field(default=1, ge=1)
+    ordinal_experts: int = Field(default=3, ge=1)
+    ordinal_loss_weight: float = Field(default=1.0, ge=0.0)
+    ordinal_fuse: bool = True
     backbone_lora: bool = False
     freeze_encoder: bool = False
     license: str = "Apache-2.0"
@@ -751,6 +776,20 @@ class ModelConfig(BaseConfig):
             "without inspecting ``pretrain_weights``."
         ),
     )
+
+    @model_validator(mode="after")
+    def _check_ordinal_head(self) -> "ModelConfig":
+        """Reject an ordinal grading block that is degenerate or larger than the label set."""
+        if self.ordinal_levels == 0:
+            return self
+        if self.ordinal_levels < 2:
+            raise ValueError(f"ordinal_levels must be 0 (off) or at least 2, got {self.ordinal_levels}.")
+        graded = self.ordinal_levels * self.ordinal_subclasses
+        if graded > self.num_classes:
+            raise ValueError(
+                f"ordinal_levels * ordinal_subclasses = {graded} graded classes exceed num_classes={self.num_classes}."
+            )
+        return self
 
     @model_validator(mode="after")
     def _sync_pe_with_resolution(self) -> "ModelConfig":
@@ -1087,6 +1126,38 @@ class RFDETRLargeConfig(ModelConfig):
     num_select: int = 300
 
 
+class DinoV3DETRNanoConfig(RFDETRNanoConfig):
+    """DinoV3-DETR Nano: RF-DETR Nano with a DINOv3 ViT-S/16 encoder.
+
+    DINOv3 already uses 16-px patches, so only the encoder changes. There is no COCO-pretrained detector for this
+    encoder, so ``pretrain_weights`` is ``None`` and the encoder starts from the LVD-1689M DINOv3 weights.
+    """
+
+    encoder: DinoV3EncoderName = "dinov3_windowed_small"  # type: ignore[assignment]
+    pretrain_weights: PathLikeStr | None = None
+
+
+class DinoV3DETRSmallConfig(RFDETRSmallConfig):
+    """DinoV3-DETR Small: RF-DETR Small with a DINOv3 ViT-S/16 encoder (see :class:`DinoV3DETRNanoConfig`)."""
+
+    encoder: DinoV3EncoderName = "dinov3_windowed_small"  # type: ignore[assignment]
+    pretrain_weights: PathLikeStr | None = None
+
+
+class DinoV3DETRMediumConfig(RFDETRMediumConfig):
+    """DinoV3-DETR Medium: RF-DETR Medium with a DINOv3 ViT-S/16 encoder (see :class:`DinoV3DETRNanoConfig`)."""
+
+    encoder: DinoV3EncoderName = "dinov3_windowed_small"  # type: ignore[assignment]
+    pretrain_weights: PathLikeStr | None = None
+
+
+class DinoV3DETRLargeConfig(RFDETRLargeConfig):
+    """DinoV3-DETR Large: RF-DETR Large with a DINOv3 ViT-S/16 encoder (see :class:`DinoV3DETRNanoConfig`)."""
+
+    encoder: DinoV3EncoderName = "dinov3_windowed_small"  # type: ignore[assignment]
+    pretrain_weights: PathLikeStr | None = None
+
+
 class RFDETRSegPreviewConfig(RFDETRBaseConfig):
     """Configuration for the RF-DETR Segmentation Preview model."""
 
@@ -1165,6 +1236,62 @@ class RFDETRSegLargeConfig(RFDETRBaseConfig):
     num_select: int = 200
     pretrain_weights: PathLikeStr | None = "rf-detr-seg-large.pt"
     num_classes: int = 90
+
+
+class DinoV3DETRSegNanoConfig(RFDETRSegNanoConfig):
+    """DinoV3-DETR Seg Nano: RF-DETR Seg Nano with a DINOv3 ViT-S/16 encoder.
+
+    DINOv3 needs 16-px patches instead of 12, so the resolution rises from 312 to 416 to keep the same
+    26 x 26 patch grid, and with it the encoder cost, of RF-DETR Seg Nano.
+    """
+
+    encoder: DinoV3EncoderName = "dinov3_windowed_small"  # type: ignore[assignment]
+    patch_size: int = 16
+    resolution: int = 416
+    positional_encoding_size: int = 416 // 16
+    pretrain_weights: PathLikeStr | None = None
+
+
+class DinoV3DETRSegSmallConfig(RFDETRSegSmallConfig):
+    """DinoV3-DETR Seg Small: RF-DETR Seg Small with a DINOv3 ViT-S/16 encoder.
+
+    DINOv3 needs 16-px patches instead of 12, so the resolution rises from 384 to 512 to keep the same
+    32 x 32 patch grid, and with it the encoder cost, of RF-DETR Seg Small.
+    """
+
+    encoder: DinoV3EncoderName = "dinov3_windowed_small"  # type: ignore[assignment]
+    patch_size: int = 16
+    resolution: int = 512
+    positional_encoding_size: int = 512 // 16
+    pretrain_weights: PathLikeStr | None = None
+
+
+class DinoV3DETRSegMediumConfig(RFDETRSegMediumConfig):
+    """DinoV3-DETR Seg Medium: RF-DETR Seg Medium with a DINOv3 ViT-S/16 encoder.
+
+    DINOv3 needs 16-px patches instead of 12, so the resolution rises from 432 to 576 to keep the same
+    36 x 36 patch grid, and with it the encoder cost, of RF-DETR Seg Medium.
+    """
+
+    encoder: DinoV3EncoderName = "dinov3_windowed_small"  # type: ignore[assignment]
+    patch_size: int = 16
+    resolution: int = 576
+    positional_encoding_size: int = 576 // 16
+    pretrain_weights: PathLikeStr | None = None
+
+
+class DinoV3DETRSegLargeConfig(RFDETRSegLargeConfig):
+    """DinoV3-DETR Seg Large: RF-DETR Seg Large with a DINOv3 ViT-S/16 encoder.
+
+    DINOv3 needs 16-px patches instead of 12, so the resolution rises from 504 to 672 to keep the same
+    42 x 42 patch grid, and with it the encoder cost, of RF-DETR Seg Large.
+    """
+
+    encoder: DinoV3EncoderName = "dinov3_windowed_small"  # type: ignore[assignment]
+    patch_size: int = 16
+    resolution: int = 672
+    positional_encoding_size: int = 672 // 16
+    pretrain_weights: PathLikeStr | None = None
 
 
 class RFDETRSegXLargeConfig(RFDETRBaseConfig):

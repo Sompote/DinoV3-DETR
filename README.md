@@ -1,322 +1,187 @@
-# RF-DETR: Real-Time SOTA Object Detection, Instance Segmentation, and Keypoint Detection
+# DinoV3-DETR
 
-<div align="center">
+DinoV3-DETR is a real-time model for object detection and instance segmentation built on [RF-DETR](https://github.com/roboflow/rf-detr) (Robinson et al., 2026). It adds two things to RF-DETR. The first is a new backbone, Meta's [DINOv3](https://github.com/facebookresearch/dinov3) vision transformer (Siméoni et al., 2025), in place of DINOv2. The second is an optional **mixture-of-experts (MoE) ordinal head** for label sets whose classes carry an ordered grade, such as rock-mass quality A to E or damage from slight to severe. The decoder, multi-scale projector, training loop and export path are RF-DETR's own, so the code base is a fork of RF-DETR rather than a new detector. We keep RF-DETR's licence, copyright headers and citation, and readers should treat this repository as derived work built on RF-DETR.
 
-[![version](https://badge.fury.io/py/rfdetr.svg)](https://badge.fury.io/py/rfdetr) [![downloads](https://img.shields.io/pypi/dm/rfdetr)](https://pypistats.org/packages/rfdetr) [![codecov](https://codecov.io/gh/roboflow/rf-detr/graph/badge.svg?token=K8V4ARR3XV)](https://codecov.io/gh/roboflow/rf-detr) [![python-version](https://img.shields.io/pypi/pyversions/rfdetr)](https://badge.fury.io/py/rfdetr) [![license](https://img.shields.io/badge/license-Apache%202.0-blue)](https://github.com/roboflow/rf-detr/blob/main/LICENSE)
+| Component        | RF-DETR                       | DinoV3-DETR                                                         |
+| ---------------- | ----------------------------- | ------------------------------------------------------------------- |
+| Backbone         | DINOv2 with registers         | DINOv3 (ViT-S/16 default, S+/B/L/H+ selectable)                     |
+| Position encoding | learned absolute, interpolated | 2D RoPE, any input divisible by `16 × num_windows`                |
+| Class head       | independent sigmoids          | independent sigmoids, plus an optional MoE ordinal head for graded classes |
+| Decoder, projector, losses, export | RF-DETR          | unchanged                                                           |
 
-[![arXiv](https://img.shields.io/badge/arXiv-2511.09554-b31b1b.svg)](https://arxiv.org/abs/2511.09554) [![hf space](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-blue)](https://huggingface.co/spaces/SkalskiP/RF-DETR) [![colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/roboflow-ai/notebooks/blob/main/notebooks/how-to-finetune-rf-detr-on-detection-dataset.ipynb) [![roboflow](https://raw.githubusercontent.com/roboflow-ai/notebooks/main/assets/badges/roboflow-blogpost.svg)](https://blog.roboflow.com/rf-detr) [![discord](https://img.shields.io/discord/1159501506232451173?logo=discord&label=discord&labelColor=fff&color=5865f2&link=https%3A%2F%2Fdiscord.gg%2FGbfgXGJ8Bk)](https://discord.gg/GbfgXGJ8Bk)
+## The DINOv3 backbone
 
-[![Papers with Code leaderboard](https://paperswithcode.co/api/v1/papers/2511.09554/leaderboard-badge.svg?eval=821&live=1)](https://paperswithcode.co/api/v1/papers/2511.09554/leaderboard-badge-link?eval=821)
+The backbone change replaces RF-DETR's DINOv2-with-registers encoder with a DINOv3 ViT pretrained on LVD-1689M. DINOv3 differs from DINOv2 in three ways that the port has to handle. It uses 16-pixel patches, which matches the patch size that RF-DETR Nano, Small, Medium and Large already use, so the projector and decoder need no change. It carries four register tokens next to the CLS token. It encodes position with 2D rotary embeddings (RoPE) on the patch tokens instead of a learned absolute table, so the encoder accepts any input whose sides are divisible by `16 × num_windows` without interpolating weights, and export needs no position-table freeze.
 
-<a href="https://trendshift.io/repositories/14379?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-14379" target="_blank" rel="noopener noreferrer">
-<img src="https://trendshift.io/api/badge/repositories/14379" alt="roboflow%2Frf-detr | Trendshift" width="250" height="55"/>
-</a>
+We keep RF-DETR's windowed attention, in which layers that do not feed the decoder attend inside `num_windows × num_windows` windows while the output layers attend globally. Each window keeps its patches' global RoPE coordinates, so a windowed layer computes exactly the attention of the global layer restricted to that window, and the prefix tokens (CLS and registers) are copied into every window and averaged afterwards. We switch off DINOv3's RoPE coordinate augmentation (`pos_embed_rescale`) so that the detector sees the same patch coordinates in training and evaluation. The encoder plugs into RF-DETR through its backbone registry (`rfdetr.models.backbone.register_backbone`), so layer-wise learning-rate decay, the drop-path schedule, gradient checkpointing and LoRA work unchanged. The implementation is in `src/rfdetr/models/backbone/dinov3.py`.
 
-</div>
+## Models
 
----
+DinoV3-DETR comes in two families, detection models that predict boxes and segmentation models that predict a box and a mask for every instance. Both families use a DINOv3 ViT-S/16 encoder by default.
 
-RF-DETR is a real-time transformer architecture for object detection, instance segmentation, and keypoint detection (preview) developed by Roboflow. Built on a DINOv2 vision transformer backbone (a PE-Core-T backbone for Atto, Femto and Pico), RF-DETR delivers state-of-the-art accuracy and latency trade-offs on [Microsoft COCO](https://cocodataset.org/#home) and [RF100-VL](https://github.com/roboflow/rf100-vl).
+### Object detection
 
-RF-DETR uses a DINOv2 vision transformer backbone (PE-Core-T for Atto, Femto and Pico) and supports object detection, instance segmentation, and keypoint detection (preview) in a single, consistent API. The open-source `rfdetr` package and Apache-designated models are released under Apache 2.0, while Plus components (`rfdetr_plus`, including RF-DETR-Atto/Femto/Pico/XL/2XL detection models) are licensed under PML 1.0.
+Each detection model keeps the decoder, query count and resolution of the RF-DETR variant it is built from, because RF-DETR's detection models already use 16-pixel patches.
 
-The published RF-DETR sizes were created with neural architecture search (NAS) — and the same NAS method is now available on the [Roboflow platform](https://app.roboflow.com/), so you can discover the best architecture for your own dataset. Learn more in the [NAS docs](https://docs.roboflow.com/train/neural-architecture-search).
+| Class              | Name                 | Built on       | Resolution | Default encoder         |
+| ------------------ | -------------------- | -------------- | ---------- | ----------------------- |
+| `DinoV3DETRNano`   | `dinov3-detr-nano`   | RF-DETR Nano   | 384        | `dinov3_windowed_small` |
+| `DinoV3DETRSmall`  | `dinov3-detr-small`  | RF-DETR Small  | 512        | `dinov3_windowed_small` |
+| `DinoV3DETRMedium` | `dinov3-detr-medium` | RF-DETR Medium | 576        | `dinov3_windowed_small` |
+| `DinoV3DETRLarge`  | `dinov3-detr-large`  | RF-DETR Large  | 704        | `dinov3_windowed_small` |
 
-https://github.com/user-attachments/assets/add23fd1-266f-4538-8809-d7dd5767e8e6
+### Instance segmentation
 
-## Install
+RF-DETR's segmentation models use 12-pixel patches, which DINOv3 cannot load, so each segmentation model switches to 16-pixel patches and raises the resolution to keep the patch grid, and with it the encoder cost, of the RF-DETR variant. The mask head, decoder and query count are unchanged.
 
-To install RF-DETR, install the `rfdetr` package in a [**Python>=3.10**](https://www.python.org/) environment with `pip`.
+| Class                 | Name                     | Built on           | Resolution (RF-DETR) | Patch grid | Queries |
+| --------------------- | ------------------------ | ------------------ | -------------------- | ---------- | ------- |
+| `DinoV3DETRSegNano`   | `dinov3-detr-seg-nano`   | RF-DETR Seg Nano   | 416 (312)            | 26 × 26    | 100     |
+| `DinoV3DETRSegSmall`  | `dinov3-detr-seg-small`  | RF-DETR Seg Small  | 512 (384)            | 32 × 32    | 100     |
+| `DinoV3DETRSegMedium` | `dinov3-detr-seg-medium` | RF-DETR Seg Medium | 576 (432)            | 36 × 36    | 200     |
+| `DinoV3DETRSegLarge`  | `dinov3-detr-seg-large`  | RF-DETR Seg Large  | 672 (504)            | 42 × 42    | 200     |
+
+### Encoder sizes
+
+Any of the five LVD-1689M DINOv3 sizes can be selected through the `encoder` argument, and dropping `windowed_` from the name gives global attention in every layer. The parameter counts below were measured on the built encoders.
+
+| Size   | Encoder name              | Hugging Face weights                           | Encoder parameters |
+| ------ | ------------------------- | ---------------------------------------------- | ------------------ |
+| ViT-S  | `dinov3_windowed_small`   | `facebook/dinov3-vits16-pretrain-lvd1689m`     | 21.6 M             |
+| ViT-S+ | `dinov3_windowed_splus`   | `facebook/dinov3-vits16plus-pretrain-lvd1689m` | 28.7 M             |
+| ViT-B  | `dinov3_windowed_base`    | `facebook/dinov3-vitb16-pretrain-lvd1689m`     | 85.7 M             |
+| ViT-L  | `dinov3_windowed_large`   | `facebook/dinov3-vitl16-pretrain-lvd1689m`     | 303.1 M            |
+| ViT-H+ | `dinov3_windowed_hplus`   | `facebook/dinov3-vith16plus-pretrain-lvd1689m` | 840.6 M            |
+
+## Installation
+
+The package installs as `rfdetr`, the same import name as upstream, so it should go into its own environment. It needs Python 3.10 or newer, PyTorch 2.5 or newer and transformers 5.x.
 
 ```bash
-pip install rfdetr
+git clone https://github.com/Sompote/DinoV3-DETR.git
+cd DinoV3-DETR
+pip install -e ".[train]"
 ```
 
-<details>
-<summary>Install from source</summary>
-
-<br>
-
-By installing RF-DETR from source, you can explore the most recent features and enhancements that have not yet been officially released. **Please note that these updates are still in development and may not be as stable as the latest published release.**
+The DINOv3 weights are gated on the Hugging Face Hub. Accept the licence on the model page of the encoder you want (for ViT-S, [facebook/dinov3-vits16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m)) and log in once before the first training run.
 
 ```bash
-pip install https://github.com/roboflow/rf-detr/archive/refs/heads/develop.zip
+hf auth login
 ```
 
-</details>
+## Usage
 
-## Benchmarks
-
-RF-DETR achieves state-of-the-art results in both object detection and instance segmentation, with benchmarks reported on Microsoft COCO and RF100-VL (RF100-VL for detection only). The charts and tables below compare RF-DETR against other top real-time models across accuracy and latency for detection and segmentation. All COCO accuracy numbers are measured in-house for every model shown, computed with pycocotools in SAB over the full 5,000-image `val2017` split, so every row is directly comparable and may differ from vendor-reported figures. The sole exception is rows marked †, which are quoted from the original authors' paper and were not measured in SAB. All latency numbers were measured on an NVIDIA T4 using TensorRT, FP16, and batch size 1. Parameter counts are deployment (fused) `nn.Module` parameter counts (`model.parameters()`, not the raw tensor count of the saved checkpoint), except rows marked †, which are the authors' reported counts. For full benchmarking methodology and reproducibility details, see [roboflow/sab](https://github.com/roboflow/single_artifact_benchmarking).
-
-### Detection
-
-<img alt="rf_detr_1-4_latency_accuracy_object_detection" src="https://storage.googleapis.com/com-roboflow-marketing/rf-detr/rf_detr_1-4_latency_accuracy_object_detection.png" />
-
-<details>
-<summary>See object detection benchmark numbers</summary>
-
-<br>
-
-| Architecture  | COCO AP<sub>50</sub> | COCO AP<sub>50:95</sub> | RF100VL AP<sub>50</sub> | RF100VL AP<sub>50:95</sub> | Latency (ms) | Params (M) | Resolution |  License   |
-| :-----------: | :------------------: | :---------------------: | :---------------------: | :------------------------: | :----------: | :--------: | :--------: | :--------: |
-|  RF-DETR-A △  |         49.4         |          30.5           |          78.2           |            48.3            |     1.0      |    7.4     |  380x380   |  PML 1.0   |
-|  RF-DETR-F △  |         55.9         |          37.8           |          82.5           |            53.8            |     1.4      |    7.9     |  384x384   |  PML 1.0   |
-|  RF-DETR-P △  |         60.2         |          41.6           |          84.1           |            56.0            |     1.7      |    8.4     |  560x560   |  PML 1.0   |
-|   RF-DETR-N   |         67.6         |          48.4           |          85.0           |            57.7            |     2.3      |    30.5    |  384x384   | Apache 2.0 |
-|   RF-DETR-S   |         72.1         |          53.0           |          86.7           |            60.2            |     3.5      |    32.1    |  512x512   | Apache 2.0 |
-|   RF-DETR-M   |         73.6         |          54.7           |          87.4           |            61.2            |     4.4      |    33.7    |  576x576   | Apache 2.0 |
-|   RF-DETR-L   |         75.1         |          56.5           |          88.2           |            62.2            |     6.8      |    33.9    |  704x704   | Apache 2.0 |
-| RF-DETR-XL △  |         77.4         |          58.6           |          88.5           |            62.9            |     11.5     |   126.4    |  700x700   |  PML 1.0   |
-| RF-DETR-2XL △ |         78.5         |          60.1           |          89.0           |            63.2            |     17.2     |   126.9    |  880x880   |  PML 1.0   |
-|   YOLO11-N    |         52.0         |          37.4           |          81.4           |            55.3            |     2.5      |    2.6     |  640x640   |  AGPL-3.0  |
-|   YOLO11-S    |         59.7         |          44.4           |          82.3           |            56.2            |     3.2      |    9.4     |  640x640   |  AGPL-3.0  |
-|   YOLO11-M    |         64.1         |          48.6           |          82.5           |            56.5            |     5.1      |    20.1    |  640x640   |  AGPL-3.0  |
-|   YOLO11-L    |         64.9         |          49.9           |          82.2           |            56.5            |     6.5      |    25.3    |  640x640   |  AGPL-3.0  |
-|   YOLO11-X    |         66.1         |          50.9           |          81.7           |            56.2            |     10.5     |    56.9    |  640x640   |  AGPL-3.0  |
-|   YOLO26-N    |         55.8         |          40.3           |          76.7           |            52.0            |     1.7      |    2.6     |  640x640   |  AGPL-3.0  |
-|   YOLO26-S    |         64.3         |          47.7           |          82.7           |            57.0            |     2.6      |    9.4     |  640x640   |  AGPL-3.0  |
-|   YOLO26-M    |         69.7         |          52.5           |          84.4           |            58.7            |     4.4      |    20.1    |  640x640   |  AGPL-3.0  |
-|   YOLO26-L    |         71.1         |          54.1           |          85.0           |            59.3            |     5.7      |    25.3    |  640x640   |  AGPL-3.0  |
-|   YOLO26-X    |         74.0         |          56.9           |          85.6           |            60.0            |     9.6      |    56.9    |  640x640   |  AGPL-3.0  |
-|   LW-DETR-T   |         60.7         |          42.9           |          84.7           |            57.1            |     1.9      |    12.1    |  640x640   | Apache 2.0 |
-|   LW-DETR-S   |         66.8         |          48.0           |          85.0           |            57.4            |     2.6      |    14.6    |  640x640   | Apache 2.0 |
-|   LW-DETR-M   |         72.0         |          52.6           |          86.8           |            59.8            |     4.4      |    28.2    |  640x640   | Apache 2.0 |
-|   LW-DETR-L   |         74.6         |          56.1           |          87.4           |            61.5            |     6.9      |    46.8    |  640x640   | Apache 2.0 |
-|   LW-DETR-X   |         76.9         |          58.3           |          87.9           |            62.1            |     13.0     |   118.0    |  640x640   | Apache 2.0 |
-|   D-FINE-N    |         60.2         |          42.7           |          84.4           |            58.2            |     2.1      |    3.8     |  640x640   | Apache 2.0 |
-|   D-FINE-S    |         67.6         |          50.6           |          85.3           |            60.3            |     3.5      |    10.2    |  640x640   | Apache 2.0 |
-|   D-FINE-M    |         72.6         |          55.0           |          85.5           |            60.6            |     5.4      |    19.2    |  640x640   | Apache 2.0 |
-|   D-FINE-L    |         74.9         |          57.2           |          86.4           |            61.6            |     7.5      |    31.0    |  640x640   | Apache 2.0 |
-|   D-FINE-X    |         76.8         |          59.3           |          86.9           |            62.2            |     11.5     |    62.0    |  640x640   | Apache 2.0 |
-|    SAM 3 †    |          —           |            —            |            —            |            61.6            |      —       |    ~850    | 1008x1008  |    N/A     |
-
-> † Reported by the SAM 3 authors ([arXiv:2511.16719](https://arxiv.org/abs/2511.16719), Table 36), **not** measured by us in SAB. The value is SAM 3 fine-tuned on the full RF100-VL training set, which is the same setting as the RF100VL columns above — SAM 3's paper reports LW-DETR-m at 59.8 on this benchmark, matching our own measurement, so the numbers line up. Dashes mark results SAM 3 does not report under this protocol. Parameter count is the paper's stated ~850 M (~450 M vision + ~300 M text encoders + ~100 M detector/tracker).
-
-</details>
-
-### Segmentation
-
-<img alt="rf_detr_1-4_latency_accuracy_instance_segmentation" src="https://storage.googleapis.com/com-roboflow-marketing/rf-detr/rf_detr_1-4_latency_accuracy_instance_segmentation.png" />
-
-<details>
-<summary>See instance segmentation benchmark numbers</summary>
-
-<br>
-
-|  Architecture   | COCO AP<sub>50</sub> | COCO AP<sub>50:95</sub> | Latency (ms) | Params (M) | Resolution |  License   |
-| :-------------: | :------------------: | :---------------------: | :----------: | :--------: | :--------: | :--------: |
-|  RF-DETR-Seg-N  |         63.0         |          40.3           |     3.4      |    33.6    |  312x312   | Apache 2.0 |
-|  RF-DETR-Seg-S  |         66.2         |          43.1           |     4.4      |    33.7    |  384x384   | Apache 2.0 |
-|  RF-DETR-Seg-M  |         68.4         |          45.3           |     5.9      |    35.7    |  432x432   | Apache 2.0 |
-|  RF-DETR-Seg-L  |         70.5         |          47.1           |     8.8      |    36.2    |  504x504   | Apache 2.0 |
-| RF-DETR-Seg-XL  |         72.2         |          48.8           |     13.5     |    38.1    |  624x624   | Apache 2.0 |
-| RF-DETR-Seg-2XL |         73.1         |          49.9           |     21.8     |    38.6    |  768x768   | Apache 2.0 |
-|  YOLOv8-N-Seg   |         45.6         |          28.3           |     3.5      |    3.4     |  640x640   |  AGPL-3.0  |
-|  YOLOv8-S-Seg   |         53.8         |          34.0           |     4.2      |    11.8    |  640x640   |  AGPL-3.0  |
-|  YOLOv8-M-Seg   |         58.2         |          37.3           |     7.0      |    27.3    |  640x640   |  AGPL-3.0  |
-|  YOLOv8-L-Seg   |         60.5         |          39.0           |     9.7      |    46.0    |  640x640   |  AGPL-3.0  |
-|  YOLOv8-XL-Seg  |         61.3         |          39.5           |     14.0     |    71.8    |  640x640   |  AGPL-3.0  |
-|  YOLOv11-N-Seg  |         47.8         |          30.0           |     3.6      |    2.9     |  640x640   |  AGPL-3.0  |
-|  YOLOv11-S-Seg  |         55.4         |          35.0           |     4.6      |    10.1    |  640x640   |  AGPL-3.0  |
-|  YOLOv11-M-Seg  |         60.0         |          38.5           |     6.9      |    22.4    |  640x640   |  AGPL-3.0  |
-|  YOLOv11-L-Seg  |         61.5         |          39.5           |     8.3      |    27.6    |  640x640   |  AGPL-3.0  |
-| YOLOv11-XL-Seg  |         62.4         |          40.1           |     13.7     |    62.1    |  640x640   |  AGPL-3.0  |
-|  YOLO26-N-Seg   |         54.3         |          34.7           |     2.31     |    2.7     |  640x640   |  AGPL-3.0  |
-|  YOLO26-S-Seg   |         62.4         |          40.2           |     3.47     |    10.4    |  640x640   |  AGPL-3.0  |
-|  YOLO26-M-Seg   |         67.8         |          44.0           |     6.32     |    23.6    |  640x640   |  AGPL-3.0  |
-|  YOLO26-L-Seg   |         69.8         |          45.5           |     7.58     |    28.0    |  640x640   |  AGPL-3.0  |
-|  YOLO26-X-Seg   |         71.6         |          46.8           |    12.92     |    62.8    |  640x640   |  AGPL-3.0  |
-
-</details>
-
-### Keypoints
-
-<img alt="RF-DETR Keypoint mAP vs latency chart comparing against YOLO26-pose and YOLO11-pose on MS COCO" src="https://raw.githubusercontent.com/roboflow/rf-detr/develop/docs/assets/keypoints/kp-map-latency.png" />
-
-<details>
-<summary>See keypoint detection benchmark numbers</summary>
-
-<br>
-
-|        Architecture        | COCO AP<sub>50:95</sub> | Latency (ms) | Params (M) |  License   |
-| :------------------------: | :---------------------: | :----------: | :--------: | :--------: |
-| RF-DETR Keypoint (Preview) |          71.8           |     9.7      |    40.7    | Apache 2.0 |
-|       YOLO11-pose N        |          48.9           |     3.2      |    2.9     |  AGPL-3.0  |
-|       YOLO11-pose S        |          57.5           |     3.4      |    9.9     |  AGPL-3.0  |
-|       YOLO11-pose M        |          64.2           |     5.2      |    20.9    |  AGPL-3.0  |
-|       YOLO11-pose L        |          65.2           |     6.6      |    26.2    |  AGPL-3.0  |
-|       YOLO11-pose X        |          68.6           |     10.6     |    58.8    |  AGPL-3.0  |
-|       YOLO26-pose N        |          55.9           |     1.9      |    2.9     |  AGPL-3.0  |
-|       YOLO26-pose S        |          62.0           |     2.7      |    10.4    |  AGPL-3.0  |
-|       YOLO26-pose M        |          68.0           |     4.6      |    21.5    |  AGPL-3.0  |
-|       YOLO26-pose L        |          69.2           |     5.9      |    25.9    |  AGPL-3.0  |
-|       YOLO26-pose X        |          71.0           |     9.8      |    57.6    |  AGPL-3.0  |
-
-</details>
-
-> Keypoint benchmarks report AP<sub>50:95</sub> (OKS-based); this is the standard COCO keypoint comparison metric.
-
-### NAS on the Roboflow Platform
-
-<img alt="RF100-VL accuracy-latency Pareto chart showing RF-DETR NAS trained on the Roboflow platform outperforming the paper NAS and named configs" src="https://raw.githubusercontent.com/roboflow/rf-detr/develop/docs/assets/nas_two_source_comparison_100_test_only.svg" />
-
-Since the paper release, we have improved RF-DETR NAS training on the Roboflow platform even further. A single training run gives you every model size, with results that beat not only the open-source checkpoints but also our own paper NAS results. [Try it now!](https://roboflow.com/)
-
-## Run Models
-
-### Detection
-
-RF-DETR provides multiple model sizes, ranging from Nano to 2XLarge. To use a different model size, replace the class name in the code snippet below with another class from the table.
+Training follows the RF-DETR API. An object detection model trains on a dataset with box annotations in COCO or YOLO format.
 
 ```python
-import supervision as sv
-from rfdetr import RFDETRMedium
-from rfdetr.assets.coco_classes import COCO_CLASSES
+from rfdetr import DinoV3DETRSmall
 
-model = RFDETRMedium()
-
-detections = model.predict("https://media.roboflow.com/dog.jpg", threshold=0.5)
-
-labels = [f"{COCO_CLASSES[class_id]}" for class_id in detections.class_id]
-
-annotated_image = sv.BoxAnnotator().annotate(detections.metadata["source_image"], detections)
-annotated_image = sv.LabelAnnotator().annotate(annotated_image, detections, labels)
+model = DinoV3DETRSmall()
+model.train(dataset_dir="<DATASET_PATH>", epochs=100, batch_size="auto", lr=1e-4)
 ```
 
-> **Note:** `COCO_CLASSES` works for COCO-pretrained models. For fine-tuned models, use `detections.data["class_name"]` instead — it resolves class names from the checkpoint and works for both COCO and custom datasets.
-
-<details>
-<summary>Run RF-DETR with Inference</summary>
-
-<br>
-
-You can also run RF-DETR models using the Inference library. To switch model size, select the appropriate inference package alias from the table below.
+An instance segmentation model trains the same way on a dataset with polygon annotations (COCO segmentation or YOLO segmentation format), and its predictions carry one mask per instance in `detections.mask`.
 
 ```python
-import requests
-import supervision as sv
-from PIL import Image
-from inference import get_model
+from rfdetr import DinoV3DETRSegSmall
 
-model = get_model("rfdetr-medium")
+model = DinoV3DETRSegSmall()
+model.train(dataset_dir="<SEGMENTATION_DATASET_PATH>", epochs=100, batch_size="auto", lr=1e-4)
 
-image = Image.open(requests.get("https://media.roboflow.com/dog.jpg", stream=True).raw)
-predictions = model.infer(image, confidence=0.5)[0]
-detections = sv.Detections.from_inference(predictions)
-
-annotated_image = sv.BoxAnnotator().annotate(image, detections)
-annotated_image = sv.LabelAnnotator().annotate(annotated_image, detections)
+detections = model.predict("image.jpg", threshold=0.5)
+masks = detections.mask  # (num_instances, height, width) boolean array
 ```
 
-</details>
-
-| Size | RF-DETR package class | Inference package alias | COCO AP<sub>50</sub> | COCO AP<sub>50:95</sub> | Latency (ms) | Params (M) | Resolution |  License   |
-| :--: | :-------------------: | :---------------------- | :------------------: | :---------------------: | :----------: | :--------: | :--------: | :--------: |
-|  A   |    `RFDETRAtto` △     | `rfdetr-atto`           |         49.4         |          30.5           |     1.0      |    7.4     |  380x380   |  PML 1.0   |
-|  F   |    `RFDETRFemto` △    | `rfdetr-femto`          |         55.9         |          37.8           |     1.4      |    7.9     |  384x384   |  PML 1.0   |
-|  P   |    `RFDETRPico` △     | `rfdetr-pico`           |         60.2         |          41.6           |     1.7      |    8.4     |  560x560   |  PML 1.0   |
-|  N   |     `RFDETRNano`      | `rfdetr-nano`           |         67.6         |          48.4           |     2.3      |    30.5    |  384x384   | Apache 2.0 |
-|  S   |     `RFDETRSmall`     | `rfdetr-small`          |         72.1         |          53.0           |     3.5      |    32.1    |  512x512   | Apache 2.0 |
-|  M   |    `RFDETRMedium`     | `rfdetr-medium`         |         73.6         |          54.7           |     4.4      |    33.7    |  576x576   | Apache 2.0 |
-|  L   |     `RFDETRLarge`     | `rfdetr-large`          |         75.1         |          56.5           |     6.8      |    33.9    |  704x704   | Apache 2.0 |
-|  XL  |   `RFDETRXLarge` △    | `rfdetr-xlarge`         |         77.4         |          58.6           |     11.5     |   126.4    |  700x700   |  PML 1.0   |
-| 2XL  |   `RFDETR2XLarge` △   | `rfdetr-2xlarge`        |         78.5         |          60.1           |     17.2     |   126.9    |  880x880   |  PML 1.0   |
-
-> △ Requires the `rfdetr_plus` extension: `pip install rfdetr[plus]`. See [License](#license) for details.
-
-### Segmentation
-
-RF-DETR supports instance segmentation with model sizes from Nano to 2XLarge. To use a different model size, replace the class name in the code snippet below with another class from the table.
+A larger encoder is selected when the model is built, for detection and segmentation models alike, and inference works as in RF-DETR.
 
 ```python
-import supervision as sv
-from rfdetr import RFDETRSegMedium
-from rfdetr.assets.coco_classes import COCO_CLASSES
+from rfdetr import DinoV3DETRMedium
 
-model = RFDETRSegMedium()
-
-detections = model.predict("https://media.roboflow.com/dog.jpg", threshold=0.5)
-
-labels = [f"{COCO_CLASSES[class_id]}" for class_id in detections.class_id]
-
-annotated_image = sv.MaskAnnotator().annotate(detections.metadata["source_image"], detections)
-annotated_image = sv.LabelAnnotator().annotate(annotated_image, detections, labels)
+model = DinoV3DETRMedium(encoder="dinov3_windowed_base")
+detections = model.predict("image.jpg", threshold=0.5)
 ```
 
-<details>
-<summary>Run RF-DETR-Seg with Inference</summary>
+## The mixture-of-experts ordinal head
 
-<br>
+### Why an ordinal head
 
-You can also run RF-DETR-Seg models using the Inference library. To switch model size, select the appropriate inference package alias from the table below.
+Some label sets hide an ordered grade inside the class. The rock-mass codes `A01 … E03` grade rock quality from A to E with three sub-codes each, and damage classes run from slight to severe. RF-DETR's class head scores every class with an independent sigmoid, so its loss treats a one-grade error exactly like a four-grade error and has no notion that grade B lies between A and C. Building the ordinal model *into* the class head was tried in the rock study and cost detection, because the factorised scores couple sibling classes. The MoE ordinal head therefore sits *beside* the class head. It reads the same decoder query and predicts only the grade, so the class head still decides which objects exist and how confident they are, and the boxes and masks are untouched.
+
+### Architecture
+
+```mermaid
+flowchart LR
+    Q["decoder query q<br/>(every decoder layer)"] --> CH["class head<br/>(unchanged)"]
+    Q --> BH["box and mask heads<br/>(unchanged)"]
+    Q --> E1["expert 1<br/>CORN, Linear(256→T)"]
+    Q --> E2["expert 2<br/>CORN"]
+    Q --> E3["expert 3<br/>CORN"]
+    Q --> G["gate<br/>Linear(256→K), softmax"]
+    E1 --> M["mixture of<br/>P(L > k)"]
+    E2 --> M
+    E3 --> M
+    G --> M
+    M --> F["fusion with<br/>class-head grade evidence"]
+    CH --> F
+    F --> OUT["detection with<br/>its fused grade"]
+```
+
+The head has `K` experts (three by default) and a gate, all reading the decoder query $\mathbf{q}$. For `L` ordered grades there are $T = L - 1$ thresholds, and each expert $e$ is a CORN ordinal regressor (Shi et al., 2023) that builds the exceedance probabilities as a chain product of conditional sigmoids,
+
+$$P_e(L > k) = \prod_{j=0}^{k} \sigma\left(\mathbf{w}_{e,j}^\top \mathbf{q} + b_{e,j}\right), \qquad k = 0, \dots, T-1.$$
+
+Every factor lies between 0 and 1, so $P_e(L > k)$ can only fall as $k$ rises and the grade probabilities are never negative. The gate gives each expert a weight $g = \mathrm{softmax}(W_g \mathbf{q} + b_g)$, in the manner of the classical mixture of experts (Jacobs et al., 1991), and the experts are mixed on their cumulative probabilities,
+
+$$C_k = \sum_{e=1}^{K} g_e\, P_e(L > k).$$
+
+A convex combination of non-increasing sequences is non-increasing, so the mixture stays rank-consistent. The head returns the conditional logits of the mixture, $z_k = \mathrm{logit}(C_k / C_{k-1})$ with $C_{-1} = 1$, which lets the loss and the fusion be written once for a single CORN head and reuse it unchanged for the mixture. The grade probabilities follow as $P(A) = 1 - C_0$, $P(B) = C_0 - C_1$, and so on up to $P(E) = C_{T-1}$. The idea behind the gate is that images from different sources, such as close-up tunnel-boring-machine faces and drill-and-blast faces, may grade on different visual cues, and each expert can take one of them.
+
+### Training and inference
+
+The head trains only on the queries that the Hungarian matcher assigns to a graded object, so unmatched queries and ungraded classes never touch it. The loss is the CORN conditional binary cross-entropy, in which threshold $k$ is trained only on objects whose true grade is at least $k$, and it is added at every decoder layer with a weight equal to the classification loss weight. The matcher, the classification loss and the box, mask and IoU losses are unchanged. At inference the head multiplies its grade distribution with the grade evidence of the class head (the best class score within each grade), picks the grade with the largest product, and moves the detection's best score to that grade while keeping the sub-class the class head chose. The post-processor, mask painting and evaluation tools then run unchanged, and exported models carry the same fusion.
+
+The threshold biases are set so that a zero query gives a uniform grade distribution, the gate starts at equal weights, and the expert weights start random so that the experts can specialise. With three experts on a 256-wide query the head adds 3,855 parameters, about 0.01 % of a medium model, and `ordinal_experts=1` reduces it to a single CORN head without a gate.
+
+### Using it
+
+The head is off by default and is switched on through five model arguments, and it works with every detection and segmentation model in this repository.
+
+| Argument              | Default | Meaning                                                                    |
+| --------------------- | ------- | -------------------------------------------------------------------------- |
+| `ordinal_levels`      | `0`     | Number of ordered grades; `0` switches the head off                         |
+| `ordinal_subclasses`  | `1`     | Classes per grade inside the graded block                                   |
+| `ordinal_experts`     | `3`     | Number of experts mixed by the gate; `1` gives a single CORN head           |
+| `ordinal_loss_weight` | `1.0`   | Grading loss weight relative to the classification loss                     |
+| `ordinal_fuse`        | `True`  | Fuse the grade into the class scores at inference and in exported models    |
+
+The graded classes must be the first `ordinal_levels × ordinal_subclasses` class ids, laid out level-major (every sub-class of grade A, then of grade B, and so on), and any class after that block, such as a shotcrete class, is left ungraded. The example below is the rock-mass label set, with five grades of three sub-codes each and one ungraded class.
 
 ```python
-import requests
-import supervision as sv
-from PIL import Image
-from inference import get_model
+from rfdetr import DinoV3DETRSegMedium
 
-model = get_model("rfdetr-seg-medium")
-
-image = Image.open(requests.get("https://media.roboflow.com/dog.jpg", stream=True).raw)
-predictions = model.infer(image, confidence=0.5)[0]
-detections = sv.Detections.from_inference(predictions)
-
-annotated_image = sv.MaskAnnotator().annotate(image, detections)
-annotated_image = sv.LabelAnnotator().annotate(annotated_image, detections)
+model = DinoV3DETRSegMedium(num_classes=16, ordinal_levels=5, ordinal_subclasses=3, ordinal_experts=3)
+model.train(dataset_dir="<ROCK_DATASET_PATH>", epochs=15, batch_size=8, grad_accum_steps=2, lr=1e-4)
 ```
 
-</details>
+### Cautions and evidence
 
-| Size | RF-DETR package class | Inference package alias | COCO AP<sub>50</sub> | COCO AP<sub>50:95</sub> | Latency (ms) | Params (M) | Resolution |  License   |
-| :--: | :-------------------: | :---------------------- | :------------------: | :---------------------: | :----------: | :--------: | :--------: | :--------: |
-|  N   |    `RFDETRSegNano`    | `rfdetr-seg-nano`       |         63.0         |          40.3           |     3.4      |    33.6    |  312x312   | Apache 2.0 |
-|  S   |   `RFDETRSegSmall`    | `rfdetr-seg-small`      |         66.2         |          43.1           |     4.4      |    33.7    |  384x384   | Apache 2.0 |
-|  M   |   `RFDETRSegMedium`   | `rfdetr-seg-medium`     |         68.4         |          45.3           |     5.9      |    35.7    |  432x432   | Apache 2.0 |
-|  L   |   `RFDETRSegLarge`    | `rfdetr-seg-large`      |         70.5         |          47.1           |     8.8      |    36.2    |  504x504   | Apache 2.0 |
-|  XL  |   `RFDETRSegXLarge`   | `rfdetr-seg-xlarge`     |         72.2         |          48.8           |     13.5     |    38.1    |  624x624   | Apache 2.0 |
-| 2XL  |  `RFDETRSeg2XLarge`   | `rfdetr-seg-2xlarge`    |         73.1         |          49.9           |     21.8     |    38.6    |  768x768   | Apache 2.0 |
+After fusion each query carries a single graded class, whereas the stock post-processor emits two or three class hypotheses per query, which COCO mAP rewards. The validator's mAP therefore drops even when boxes and masks are identical, so judge the head on grading metrics such as exact-grade accuracy, within-one-grade accuracy or quadratic weighted kappa. The head trains on few queries, about two matched objects per image per query group, so it can over-fit on long schedules, and a short schedule or checkpoint selection on a validation grading metric is safer. Nothing forces the experts to differ, and no load-balancing term is used, so inspect the mean gate weights per image source before reading the experts as specialised.
 
-### Keypoints
+The head comes from a rock-mass grading study on RF-DETR-Seg-M (401 test images, 15 epochs). At one training seed the three-expert head gave the largest grading gain of any variant over the stock model, with within-one-grade accuracy rising from 0.864 to 0.926 and quadratic weighted kappa from 0.705 to 0.785. At a second seed all variants sat within noise of each other, and the stock model itself moved by 0.03 in within-one accuracy between the two seeds. Treat the head as promising rather than proven until it has been compared over several seeds on your data. These figures come from RF-DETR with a DINOv2 backbone, and the head has not yet been measured on a DINOv3 backbone.
 
-RF-DETR supports keypoint detection (preview) with `RFDETRKeypointPreview`, pretrained on COCO person keypoints.
+The [RF-DETR documentation](https://rfdetr.roboflow.com) covers dataset formats, training options, segmentation heads and export, and all of it applies here.
 
-```python
-from rfdetr import RFDETRKeypointPreview
+## Status and limitations
 
-model = RFDETRKeypointPreview()
-key_points = model.predict("image.jpg", threshold=0.5)
-```
+No COCO-pretrained DinoV3-DETR checkpoint exists, for detection or for segmentation. RF-DETR's published checkpoints contain DINOv2 encoder weights, so every DinoV3-DETR model starts from the DINOv3 encoder weights with a randomly initialised projector and decoder. Expect it to need longer training on small datasets than an RF-DETR model fine-tuned from COCO, and do not assume that it is more accurate until it has been measured on your data. We have not yet benchmarked DinoV3-DETR on COCO or any other dataset, so this README reports no accuracy or speed figures.
 
-|        Size        |  RF-DETR package class  | COCO AP<sub>50:95</sub> | Latency (ms) | Params (M) | Resolution |  License   |
-| :----------------: | :---------------------: | :---------------------: | :----------: | :--------: | :--------: | :--------: |
-| Keypoint (Preview) | `RFDETRKeypointPreview` |          71.8           |     9.7      |    40.7    |  576x576   | Apache 2.0 |
+The port has been checked with randomly initialised encoders on an RTX 3080 (PyTorch 2.8, transformers 5.19). With global attention, the encoder's feature maps match the Hugging Face `DINOv3ViTModel` hidden states exactly (maximum absolute difference 0.0). A windowed layer matches a per-window reference computation to 0.0, and gradient checkpointing reproduces the plain forward pass. All four detection models and all four segmentation models build, run a mixed-precision training step and predict, and the segmentation models return one full-resolution mask per query, and `tests/models/backbone/test_dinov3.py` holds these checks, which pass together with RF-DETR's 117 existing backbone tests. The pretrained DINOv3 weights themselves have not yet been loaded in a test, because that needs gated Hub access. Two RF-DETR features stay DINOv2-only: input channel counts other than three (`num_channels`), and the split-einsum attention rewrite in the Apple Neural Engine export, which is written for DINOv2 layers. ONNX, TensorRT and the other export formats have not yet been run on a DinoV3-DETR model.
 
-### Train Models
-
-RF-DETR supports training for object detection, instance segmentation, and keypoint detection (preview). You can train models in [Google Colab](https://colab.research.google.com/github/roboflow-ai/notebooks/blob/main/notebooks/how-to-finetune-rf-detr-on-detection-dataset.ipynb) or directly on the Roboflow platform. Below you will find a step-by-step video fine-tuning tutorial.
-
-[![rf-detr-tutorial-banner](https://github.com/user-attachments/assets/555a45c3-96e8-4d8a-ad29-f23403c8edfd)](https://youtu.be/-OvpdLAElFA)
-
-## Documentation
-
-Visit our [documentation website](https://rfdetr.roboflow.com) to learn more about how to use RF-DETR.
-
-## License
-
-Licensing is split by component:
-
-- The open-source `rfdetr` package and Apache-designated model weights are licensed under Apache License 2.0. See [`LICENSE`](LICENSE).
-- Plus components, including the `rfdetr_plus` extension and RF-DETR-XL / RF-DETR-2XL detection models, are licensed under PML 1.0.
-
-## Acknowledgements
-
-Our work is built upon [LW-DETR](https://arxiv.org/pdf/2406.03459), [DINOv2](https://arxiv.org/pdf/2304.07193), and [Deformable DETR](https://arxiv.org/pdf/2010.04159). Thanks to their authors for their excellent work!
+The MoE ordinal head has been checked in the same way, on an RTX A4000. Its tests in `tests/models/heads/test_ordinal.py` confirm that the vectorised CORN loss equals the per-threshold reference loop, that the gated mixture stays monotone and equals the gate-weighted expert probabilities, that a single expert reduces to a plain CORN head, and that fusion keeps each detection's best score and sub-class while leaving ungraded classes untouched. A 3-epoch training run of `DinoV3DETRSegNano` with the head on a synthetic four-class segmentation set logged `loss_ordinal` at every decoder layer, moved the gate away from its zero start, saved and reloaded the head exactly, and predicted masks from the reloaded checkpoint. This run checks the wiring only, with a randomly initialised encoder, and says nothing about grading accuracy.
 
 ## Citation
 
-If you find our work helpful for your research, please consider citing the following BibTeX entry.
+DinoV3-DETR is based on RF-DETR. If you use this code, please cite RF-DETR and DINOv3, and cite CORN and the mixture-of-experts paper as well if you use the MoE ordinal head.
 
 ```bibtex
 @inproceedings{robinson2026rfdetr,
@@ -326,28 +191,34 @@ If you find our work helpful for your research, please consider citing the follo
   year      = {2026},
   url       = {https://arxiv.org/abs/2511.09554}
 }
+
+@article{simeoni2025dinov3,
+  title   = {{DINOv3}},
+  author  = {Sim{\'e}oni, Oriane and Vo, Huy V. and Seitzer, Maximilian and Baldassarre, Federico and Oquab, Maxime and Jose, Cijo and Khalidov, Vasil and Szafraniec, Marc and Yi, Seungeun and Ramamonjisoa, Micha{\"e}l and Massa, Francisco and Haziza, Daniel and Wehrstedt, Luca and Wang, Jianyuan and Darcet, Timoth{\'e}e and Moutakanni, Th{\'e}o and Sentana, Leonel and Roberts, Claire and Vedaldi, Andrea and Tolan, Jamie and Brandt, John and Couprie, Camille and Mairal, Julien and J{\'e}gou, Herv{\'e} and Labatut, Patrick and Bojanowski, Piotr},
+  journal = {arXiv preprint arXiv:2508.10104},
+  year    = {2025}
+}
+
+@article{shi2023corn,
+  title   = {Deep Neural Networks for Rank-Consistent Ordinal Regression Based on Conditional Probabilities},
+  author  = {Shi, Xintong and Cao, Wenzhi and Raschka, Sebastian},
+  journal = {Pattern Analysis and Applications},
+  volume  = {26},
+  pages   = {941--955},
+  year    = {2023}
+}
+
+@article{jacobs1991moe,
+  title   = {Adaptive Mixtures of Local Experts},
+  author  = {Jacobs, Robert A. and Jordan, Michael I. and Nowlan, Steven J. and Hinton, Geoffrey E.},
+  journal = {Neural Computation},
+  volume  = {3},
+  number  = {1},
+  pages   = {79--87},
+  year    = {1991}
+}
 ```
 
-## Contribute
+## Licence
 
-We welcome and appreciate all contributions! If you notice any issues or bugs, have questions, or would like to suggest new features, please [open an issue](https://github.com/roboflow/rf-detr/issues/new) or pull request. By sharing your ideas and improvements, you help make RF-DETR better for everyone.
-
-## Project Activity
-
-<img src="https://raw.githubusercontent.com/roboflow/rf-detr/develop/docs/assets/weekly-metrics.svg" alt="Weekly Activity and Growth Metrics" role="img" width="100%" />
-
-PyPI downloads cover completed Monday-to-Sunday periods and exclude known mirrors. New stars are calculated from consecutive scheduled GitHub snapshots.
-
-<p align="center">
-    <a href="https://youtube.com/roboflow"><img src="https://media.roboflow.com/notebooks/template/icons/purple/youtube.png?ik-sdk-version=javascript-1.4.3&updatedAt=1672949634652" width="3%"/></a>
-    <img src="https://raw.githubusercontent.com/ultralytics/assets/main/social/logo-transparent.png" width="3%"/>
-    <a href="https://roboflow.com"><img src="https://media.roboflow.com/notebooks/template/icons/purple/roboflow-app.png?ik-sdk-version=javascript-1.4.3&updatedAt=1672949746649" width="3%"/></a>
-    <img src="https://raw.githubusercontent.com/ultralytics/assets/main/social/logo-transparent.png" width="3%"/>
-    <a href="https://www.linkedin.com/company/roboflow-ai/"><img src="https://media.roboflow.com/notebooks/template/icons/purple/linkedin.png?ik-sdk-version=javascript-1.4.3&updatedAt=1672949633691" width="3%"/></a>
-    <img src="https://raw.githubusercontent.com/ultralytics/assets/main/social/logo-transparent.png" width="3%"/>
-    <a href="https://docs.roboflow.com"><img src="https://media.roboflow.com/notebooks/template/icons/purple/knowledge.png?ik-sdk-version=javascript-1.4.3&updatedAt=1672949634511" width="3%"/></a>
-    <img src="https://raw.githubusercontent.com/ultralytics/assets/main/social/logo-transparent.png" width="3%"/>
-    <a href="https://discuss.roboflow.com"><img src="https://media.roboflow.com/notebooks/template/icons/purple/forum.png?ik-sdk-version=javascript-1.4.3&updatedAt=1672949633584" width="3%"/></a>
-    <img src="https://raw.githubusercontent.com/ultralytics/assets/main/social/logo-transparent.png" width="3%"/>
-    <a href="https://blog.roboflow.com"><img src="https://media.roboflow.com/notebooks/template/icons/purple/blog.png?ik-sdk-version=javascript-1.4.3&updatedAt=1672949633605" width="3%"/></a>
-</p>
+The code is released under the Apache License 2.0, the licence of RF-DETR, and the original Roboflow, Baidu (LW-DETR), Microsoft (Conditional DETR) and Facebook (DETR) copyright notices are kept in the source files. The DINOv3 weights are distributed by Meta under the separate DINOv3 License, which you accept on the Hugging Face model page and which governs any use of the pretrained encoder.

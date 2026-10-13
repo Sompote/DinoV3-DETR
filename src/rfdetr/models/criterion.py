@@ -20,6 +20,7 @@ import torch.nn.functional as F  # noqa: N812
 from torch import Tensor, nn
 
 from rfdetr.models.heads.keypoints import compute_l1_keypoint_loss
+from rfdetr.models.heads.ordinal import OrdinalMoEHead
 from rfdetr.models.heads.segmentation import (
     calculate_uncertainty,
     get_uncertain_point_coords_with_randomness,
@@ -503,6 +504,8 @@ class SetCriterion(nn.Module):
         ia_bce_loss: bool = False,
         mask_point_sample_ratio: int = 16,
         num_keypoints_per_class: list[int] | None = None,
+        ordinal_levels: int = 0,
+        ordinal_subclasses: int = 1,
     ) -> None:
         """Create the criterion.
 
@@ -513,6 +516,8 @@ class SetCriterion(nn.Module):
             losses: list of all the losses to be applied. See get_loss for list of available losses.
             focal_alpha: alpha in Focal Loss
             group_detr: Number of groups to speed detr training. Default is 1.
+            ordinal_levels: Grades of the ordinal grading head (0 when the model has none).
+            ordinal_subclasses: Classes per grade in the level-major graded block.
         """
         super().__init__()
         self.num_classes = num_classes
@@ -527,6 +532,8 @@ class SetCriterion(nn.Module):
         self.ia_bce_loss = ia_bce_loss
         self.mask_point_sample_ratio = mask_point_sample_ratio
         self.num_keypoints_per_class = num_keypoints_per_class or []
+        self.ordinal_levels = ordinal_levels
+        self.ordinal_subclasses = ordinal_subclasses
         self._compile_batched_detection_losses = False
         self._compiled_batched_detection_losses: Callable[..., tuple[Tensor, Tensor, Tensor, Tensor]] | None = None
 
@@ -1005,6 +1012,41 @@ class SetCriterion(nn.Module):
             "loss_keypoints_nll": loss_nll.sum() / num_boxes,
         }
 
+    def loss_ordinal(
+        self,
+        outputs: dict[str, Any],
+        targets: list[dict[str, Tensor]],
+        indices: list[tuple[Tensor, Tensor]],
+        num_boxes: Tensor,
+        **kwargs: Any,
+    ) -> dict[str, Tensor]:
+        """CORN loss of the ordinal grading head on the matched queries whose target class is graded.
+
+        The grade of a graded class id is ``label // ordinal_subclasses``. Unmatched queries, ungraded classes and the
+        encoder (two-stage) outputs, which carry no ``pred_ordinal``, do not train the head.
+
+        Args:
+            outputs: Layer outputs; must hold ``pred_ordinal`` for the loss to apply.
+            targets: Ground-truth dicts with ``labels``.
+            indices: Matcher assignment for this layer.
+            num_boxes: Unused; the loss is a mean over (instance, threshold) terms.
+            **kwargs: Ignored loss options.
+
+        Returns:
+            ``{"loss_ordinal": ...}``, or an empty dict for layers without ``pred_ordinal``.
+        """
+        if "pred_ordinal" not in outputs:
+            return {}
+        idx = self._get_src_permutation_idx(indices)
+        labels = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
+        keep = labels < self.ordinal_levels * self.ordinal_subclasses
+        valid_mask = self._matched_valid_mask(targets, indices)
+        if valid_mask is not None:
+            keep = keep & valid_mask.to(torch.bool)
+        z = outputs["pred_ordinal"][idx][keep]
+        level = torch.div(labels[keep], self.ordinal_subclasses, rounding_mode="floor").long()
+        return {"loss_ordinal": OrdinalMoEHead.corn_loss(z, level)}
+
     def _get_src_permutation_idx(self, indices: list[tuple[Tensor, Tensor]]) -> tuple[Tensor, Tensor]:
         # permute predictions following indices
         batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
@@ -1222,6 +1264,7 @@ class SetCriterion(nn.Module):
             "boxes": self.loss_boxes,
             "masks": self.loss_masks,
             "keypoints": self.loss_keypoints,
+            "ordinal": self.loss_ordinal,
         }
         assert loss in loss_map, f"do you really want to compute {loss} loss?"
         if matched_targets is not None and loss in {"labels", "boxes"}:

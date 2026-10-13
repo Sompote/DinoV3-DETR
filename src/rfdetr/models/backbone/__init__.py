@@ -161,3 +161,11 @@ def build_backbone(
 
     model = Joiner(backbone, position_embedding_module)
     return model
+
+
+# Built-in DINOv3 encoders go through the same registry as extension packages. Imported here, after
+# ``register_backbone`` is defined, because ``dinov3`` subclasses ``Backbone`` from this package.
+from rfdetr.models.backbone.dinov3 import DINOV3_ENCODER_NAMES, DinoV3Backbone  # noqa: E402
+
+for _encoder in DINOV3_ENCODER_NAMES:
+    register_backbone(_encoder, DinoV3Backbone)

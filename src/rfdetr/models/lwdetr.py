@@ -44,6 +44,7 @@ from rfdetr.models.criterion import (  # noqa: F401 — backward compat
     sigmoid_focal_loss,
     sigmoid_varifocal_loss,
 )
+from rfdetr.models.heads.ordinal import OrdinalMoEHead
 from rfdetr.models.heads.segmentation import SegmentationHead
 from rfdetr.models.matcher import build_matcher
 from rfdetr.models.math import MLP
@@ -133,6 +134,8 @@ class LWDETR(nn.Module):
         use_grouppose_keypoints: bool = False,
         num_keypoints_per_class: list[int] | None = None,
         grouppose_keypoint_dim_downscale: int = 1,
+        ordinal_head: OrdinalMoEHead | None = None,
+        ordinal_fuse: bool = True,
     ) -> None:
         """Initializes the model.
 
@@ -145,6 +148,8 @@ class LWDETR(nn.Module):
             aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
             group_detr: Number of groups to speed detr training. Default is 1.
             lite_refpoint_refine: TODO
+            ordinal_head: Optional ordinal grading head run on every decoder layer beside the class head.
+            ordinal_fuse: Fuse the grading head into the class logits outside training.
         """
         super().__init__()
         self.num_queries = num_queries
@@ -152,6 +157,8 @@ class LWDETR(nn.Module):
         hidden_dim = transformer.d_model
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
+        self.ordinal_head = ordinal_head
+        self.ordinal_fuse = ordinal_fuse
         self.segmentation_head = segmentation_head
         query_dim = 4
         self.refpoint_embed = nn.Embedding(num_queries * group_detr, query_dim)
@@ -569,7 +576,15 @@ class LWDETR(nn.Module):
             if self.segmentation_head is not None:
                 outputs_masks = seg_head_fwd(features[0].tensors, hs, cast(tuple[int, int], samples.tensors.shape[-2:]))
 
+            outputs_ordinal = None
+            if self.ordinal_head is not None:
+                outputs_ordinal = self.ordinal_head(hs)
+                if not self.training and self.ordinal_fuse:
+                    outputs_class = self.ordinal_head.fuse(outputs_class, outputs_ordinal)
+
             out = {"pred_logits": outputs_class[-1], "pred_boxes": outputs_coord[-1]}
+            if outputs_ordinal is not None:
+                out["pred_ordinal"] = outputs_ordinal[-1]
             if self.segmentation_head is not None:
                 out["pred_masks"] = outputs_masks[-1]
             if outputs_keypoints is not None:
@@ -581,6 +596,9 @@ class LWDETR(nn.Module):
                     outputs_masks if self.segmentation_head is not None else None,
                     outputs_keypoints,
                 )
+                if outputs_ordinal is not None:
+                    for layer_index, aux in enumerate(out["aux_outputs"]):
+                        aux["pred_ordinal"] = outputs_ordinal[layer_index]
 
         if self.two_stage:
             assert self.transformer.enc_out_class_embed is not None
@@ -697,6 +715,8 @@ class LWDETR(nn.Module):
                     outputs_keypoints.shape[1],
                 )
                 outputs_class = outputs_class + self._aggregate_keypoint_class_logits(outputs_keypoints)
+            if self.ordinal_head is not None and self.ordinal_fuse:
+                outputs_class = self.ordinal_head.fuse(outputs_class, self.ordinal_head(hs))
             if self.segmentation_head is not None:
                 outputs_masks = self.segmentation_head(
                     srcs[0],
@@ -886,6 +906,17 @@ def build_model(args: "BuilderArgs") -> LWDETR | tuple[Any, None, None]:
         use_grouppose_keypoints=getattr(args, "use_grouppose_keypoints", False),
         num_keypoints_per_class=getattr(args, "num_keypoints_per_class", []),
         grouppose_keypoint_dim_downscale=getattr(args, "grouppose_keypoint_dim_downscale", 1),
+        ordinal_head=(
+            OrdinalMoEHead(
+                args.hidden_dim,
+                num_levels=args.ordinal_levels,
+                num_subclasses=getattr(args, "ordinal_subclasses", 1),
+                num_experts=getattr(args, "ordinal_experts", 3),
+            )
+            if getattr(args, "ordinal_levels", 0)
+            else None
+        ),
+        ordinal_fuse=getattr(args, "ordinal_fuse", True),
     )
     return model
 
@@ -905,6 +936,10 @@ def build_criterion_and_postprocessors(args: "BuilderArgs") -> tuple[SetCriterio
         weight_dict["loss_keypoints_findable"] = getattr(args, "keypoint_findable_loss_coef", 0.0)
         weight_dict["loss_keypoints_visible"] = getattr(args, "keypoint_visible_loss_coef", 0.0)
         weight_dict["loss_keypoints_nll"] = getattr(args, "keypoint_nll_loss_coef", 0.0)
+    ordinal_levels = getattr(args, "ordinal_levels", 0)
+    if ordinal_levels:
+        # Same scale as the reference, which added the grading loss into loss_ce.
+        weight_dict["loss_ordinal"] = args.cls_loss_coef * getattr(args, "ordinal_loss_weight", 1.0)
     # TODO this is a hack
     if args.aux_loss:
         aux_weight_dict = {}
@@ -919,6 +954,8 @@ def build_criterion_and_postprocessors(args: "BuilderArgs") -> tuple[SetCriterio
         losses.append("masks")
     if has_keypoints:
         losses.append("keypoints")
+    if ordinal_levels:
+        losses.append("ordinal")
 
     sum_group_losses = getattr(args, "sum_group_losses", False)
     if args.segmentation_head:
@@ -935,6 +972,8 @@ def build_criterion_and_postprocessors(args: "BuilderArgs") -> tuple[SetCriterio
             ia_bce_loss=args.ia_bce_loss,
             mask_point_sample_ratio=args.mask_point_sample_ratio,
             num_keypoints_per_class=getattr(args, "num_keypoints_per_class", []),
+            ordinal_levels=ordinal_levels,
+            ordinal_subclasses=getattr(args, "ordinal_subclasses", 1),
         )
     else:
         criterion = SetCriterion(
@@ -949,6 +988,8 @@ def build_criterion_and_postprocessors(args: "BuilderArgs") -> tuple[SetCriterio
             use_position_supervised_loss=args.use_position_supervised_loss,
             ia_bce_loss=args.ia_bce_loss,
             num_keypoints_per_class=getattr(args, "num_keypoints_per_class", []),
+            ordinal_levels=ordinal_levels,
+            ordinal_subclasses=getattr(args, "ordinal_subclasses", 1),
         )
     criterion.to(device)
     postprocess = PostProcess(

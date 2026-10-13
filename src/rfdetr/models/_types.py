@@ -46,6 +46,11 @@ class BuilderArgs(Protocol):
     dual_projector_kp_only: bool
     num_keypoints_per_class: list[int]
     num_decoder_registers: int
+    ordinal_levels: int
+    ordinal_subclasses: int
+    ordinal_experts: int
+    ordinal_loss_weight: float
+    ordinal_fuse: bool
     projector_scale: list[str]
     hidden_dim: int
     patch_size: int
