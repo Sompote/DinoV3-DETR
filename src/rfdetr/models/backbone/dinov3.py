@@ -162,7 +162,7 @@ class DinoV3(nn.Module):
         for layer in self.blocks:
             layer.drop_path = _DropPath(drop_path_rate)
 
-        self.patch_size = config.patch_size
+        self.patch_size = int(config.patch_size)
         self.num_prefix_tokens = 1 + config.num_register_tokens
         self.num_windows = num_windows if use_windowed_attn else 1
         self.out_feature_indexes = list(out_feature_indexes)
@@ -253,7 +253,7 @@ class DinoV3(nn.Module):
 class DinoV3Backbone(Backbone):
     """RF-DETR backbone with a DINOv3 encoder, selected by ``encoder="dinov3[_windowed]_<size>"``."""
 
-    def _build_encoder(  # type: ignore[override]
+    def _build_encoder(
         self,
         name: str,
         *,

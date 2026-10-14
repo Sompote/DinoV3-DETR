@@ -25,6 +25,7 @@ then level 1, ...). Class ids beyond that block (for example a shotcrete class) 
 from __future__ import annotations
 
 import math
+from typing import cast
 
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -71,7 +72,7 @@ class OrdinalMoEHead(nn.Module):
         )
         with torch.no_grad():
             for expert in self.experts:
-                expert.bias.copy_(neutral)
+                cast(nn.Linear, expert).bias.copy_(neutral)
         # Zero gate: equal mixing at the start; expert weights keep their different default inits so they can split.
         self.gate = nn.Linear(dim, num_experts)
         nn.init.zeros_(self.gate.weight)
@@ -132,7 +133,8 @@ class OrdinalMoEHead(nn.Module):
             Fused logits with the shape and dtype of ``class_logits``.
         """
         n_codes = self.num_graded_classes
-        scores = torch.sigmoid(class_logits[..., :n_codes].float()).unflatten(-1, (self.num_levels, self.num_subclasses))
+        graded = torch.sigmoid(class_logits[..., :n_codes].float())
+        scores = graded.reshape(*graded.shape[:-1], self.num_levels, self.num_subclasses)
         p_class = scores.amax(dim=-1)
         p_class = p_class / p_class.sum(dim=-1, keepdim=True).clamp_min(1e-9)
         level = (p_class * self.level_probs(z)).argmax(dim=-1)
