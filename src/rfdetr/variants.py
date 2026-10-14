@@ -166,9 +166,9 @@ class RFDETRLarge(RFDETR):
 class DinoV3DETRNano(RFDETR):
     """Train DinoV3-DETR Nano, the RF-DETR Nano detector with a DINOv3 ViT-S/16 encoder in place of DINOv2.
 
-    No COCO-pretrained detector exists for this encoder: the encoder starts from the gated LVD-1689M DINOv3 weights
-    on the Hugging Face Hub and the projector and decoder start from random weights. Pass ``encoder=`` to pick
-    another DINOv3 size, e.g. ``"dinov3_windowed_base"``.
+    The encoder starts from the gated LVD-1689M DINOv3 weights on the Hugging Face Hub, and the projector, decoder,
+    queries and heads start from the matching RF-DETR COCO checkpoint (``coco_pretrain_weights``). Pass
+    ``encoder=`` to pick another DINOv3 size, e.g. ``"dinov3_windowed_base"``.
     """
 
     size = "dinov3-detr-nano"
@@ -178,9 +178,9 @@ class DinoV3DETRNano(RFDETR):
 class DinoV3DETRSmall(RFDETR):
     """Train DinoV3-DETR Small, the RF-DETR Small detector with a DINOv3 ViT-S/16 encoder in place of DINOv2.
 
-    No COCO-pretrained detector exists for this encoder: the encoder starts from the gated LVD-1689M DINOv3 weights
-    on the Hugging Face Hub and the projector and decoder start from random weights. Pass ``encoder=`` to pick
-    another DINOv3 size, e.g. ``"dinov3_windowed_base"``.
+    The encoder starts from the gated LVD-1689M DINOv3 weights on the Hugging Face Hub, and the projector, decoder,
+    queries and heads start from the matching RF-DETR COCO checkpoint (``coco_pretrain_weights``). Pass
+    ``encoder=`` to pick another DINOv3 size, e.g. ``"dinov3_windowed_base"``.
     """
 
     size = "dinov3-detr-small"
@@ -190,9 +190,9 @@ class DinoV3DETRSmall(RFDETR):
 class DinoV3DETRMedium(RFDETR):
     """Train DinoV3-DETR Medium, the RF-DETR Medium detector with a DINOv3 ViT-S/16 encoder in place of DINOv2.
 
-    No COCO-pretrained detector exists for this encoder: the encoder starts from the gated LVD-1689M DINOv3 weights
-    on the Hugging Face Hub and the projector and decoder start from random weights. Pass ``encoder=`` to pick
-    another DINOv3 size, e.g. ``"dinov3_windowed_base"``.
+    The encoder starts from the gated LVD-1689M DINOv3 weights on the Hugging Face Hub, and the projector, decoder,
+    queries and heads start from the matching RF-DETR COCO checkpoint (``coco_pretrain_weights``). Pass
+    ``encoder=`` to pick another DINOv3 size, e.g. ``"dinov3_windowed_base"``.
     """
 
     size = "dinov3-detr-medium"
@@ -202,9 +202,9 @@ class DinoV3DETRMedium(RFDETR):
 class DinoV3DETRLarge(RFDETR):
     """Train DinoV3-DETR Large, the RF-DETR Large detector with a DINOv3 ViT-S/16 encoder in place of DINOv2.
 
-    No COCO-pretrained detector exists for this encoder: the encoder starts from the gated LVD-1689M DINOv3 weights
-    on the Hugging Face Hub and the projector and decoder start from random weights. Pass ``encoder=`` to pick
-    another DINOv3 size, e.g. ``"dinov3_windowed_base"``.
+    The encoder starts from the gated LVD-1689M DINOv3 weights on the Hugging Face Hub, and the projector, decoder,
+    queries and heads start from the matching RF-DETR COCO checkpoint (``coco_pretrain_weights``). Pass
+    ``encoder=`` to pick another DINOv3 size, e.g. ``"dinov3_windowed_base"``.
     """
 
     size = "dinov3-detr-large"
@@ -286,7 +286,8 @@ class DinoV3DETRSegNano(RFDETRSeg):
     """Train DinoV3-DETR Seg Nano, the RF-DETR Seg Nano instance-segmentation model with a DINOv3 ViT-S/16 encoder.
 
     The default resolution is 416 (312 in RF-DETR Seg Nano), and custom resolutions must be multiples of
-    ``16 * num_windows``. Like the detection variants, it starts from DINOv3 encoder weights with a random decoder.
+    ``16 * num_windows``. Like the detection variants, it starts from DINOv3 encoder weights and the matching
+    RF-DETR Seg COCO checkpoint for everything else.
     """
 
     size = "dinov3-detr-seg-nano"
@@ -297,7 +298,8 @@ class DinoV3DETRSegSmall(RFDETRSeg):
     """Train DinoV3-DETR Seg Small, the RF-DETR Seg Small instance-segmentation model with a DINOv3 ViT-S/16 encoder.
 
     The default resolution is 512 (384 in RF-DETR Seg Small), and custom resolutions must be multiples of
-    ``16 * num_windows``. Like the detection variants, it starts from DINOv3 encoder weights with a random decoder.
+    ``16 * num_windows``. Like the detection variants, it starts from DINOv3 encoder weights and the matching
+    RF-DETR Seg COCO checkpoint for everything else.
     """
 
     size = "dinov3-detr-seg-small"
@@ -308,7 +310,8 @@ class DinoV3DETRSegMedium(RFDETRSeg):
     """Train DinoV3-DETR Seg Medium, the RF-DETR Seg Medium instance-segmentation model with a DINOv3 ViT-S/16 encoder.
 
     The default resolution is 576 (432 in RF-DETR Seg Medium), and custom resolutions must be multiples of
-    ``16 * num_windows``. Like the detection variants, it starts from DINOv3 encoder weights with a random decoder.
+    ``16 * num_windows``. Like the detection variants, it starts from DINOv3 encoder weights and the matching
+    RF-DETR Seg COCO checkpoint for everything else.
     """
 
     size = "dinov3-detr-seg-medium"
@@ -319,7 +322,8 @@ class DinoV3DETRSegLarge(RFDETRSeg):
     """Train DinoV3-DETR Seg Large, the RF-DETR Seg Large instance-segmentation model with a DINOv3 ViT-S/16 encoder.
 
     The default resolution is 672 (504 in RF-DETR Seg Large), and custom resolutions must be multiples of
-    ``16 * num_windows``. Like the detection variants, it starts from DINOv3 encoder weights with a random decoder.
+    ``16 * num_windows``. Like the detection variants, it starts from DINOv3 encoder weights and the matching
+    RF-DETR Seg COCO checkpoint for everything else.
     """
 
     size = "dinov3-detr-seg-large"

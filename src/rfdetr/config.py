@@ -713,6 +713,9 @@ class ModelConfig(BaseConfig):
         ordinal_experts: Number of CORN experts mixed by the gate; ``1`` gives a single CORN head. Defaults to ``3``.
         ordinal_loss_weight: Weight of the grading loss relative to the classification loss. Defaults to ``1.0``.
         ordinal_fuse: Fuse the grading head into the class scores at inference. Defaults to ``True``.
+        coco_pretrain_weights: RF-DETR COCO checkpoint whose non-encoder weights (projector, decoder, queries,
+            class, box and mask heads) initialise a model with a different encoder, such as DINOv3. The encoder keeps
+            its own pretrained weights. Used only when ``pretrain_weights`` is ``None``; ``None`` disables it.
     """
 
     encoder: EncoderName
@@ -764,6 +767,7 @@ class ModelConfig(BaseConfig):
     ordinal_experts: int = Field(default=3, ge=1)
     ordinal_loss_weight: float = Field(default=1.0, ge=0.0)
     ordinal_fuse: bool = True
+    coco_pretrain_weights: PathLikeStr | None = None
     backbone_lora: bool = False
     freeze_encoder: bool = False
     license: str = "Apache-2.0"
@@ -984,7 +988,7 @@ class ModelConfig(BaseConfig):
 
         return self
 
-    @field_validator("pretrain_weights", mode="before")
+    @field_validator("pretrain_weights", "coco_pretrain_weights", mode="before")
     @classmethod
     def expand_path(cls, v: PathLikeStr | None) -> str | None:
         """Expand and resolve the pretrain_weights path.
@@ -1129,12 +1133,14 @@ class RFDETRLargeConfig(ModelConfig):
 class DinoV3DETRNanoConfig(RFDETRNanoConfig):
     """DinoV3-DETR Nano: RF-DETR Nano with a DINOv3 ViT-S/16 encoder.
 
-    DINOv3 already uses 16-px patches, so only the encoder changes. There is no COCO-pretrained detector for this
-    encoder, so ``pretrain_weights`` is ``None`` and the encoder starts from the LVD-1689M DINOv3 weights.
+    DINOv3 already uses 16-px patches, so only the encoder changes. The encoder starts from the LVD-1689M DINOv3
+    weights, and the projector, decoder, queries and heads start from the RF-DETR Nano COCO checkpoint
+    (``coco_pretrain_weights``); pass ``coco_pretrain_weights=None`` to start them from random weights instead.
     """
 
     encoder: DinoV3EncoderName = "dinov3_windowed_small"  # type: ignore[assignment]
     pretrain_weights: PathLikeStr | None = None
+    coco_pretrain_weights: PathLikeStr | None = "rf-detr-nano.pth"
 
 
 class DinoV3DETRSmallConfig(RFDETRSmallConfig):
@@ -1142,6 +1148,7 @@ class DinoV3DETRSmallConfig(RFDETRSmallConfig):
 
     encoder: DinoV3EncoderName = "dinov3_windowed_small"  # type: ignore[assignment]
     pretrain_weights: PathLikeStr | None = None
+    coco_pretrain_weights: PathLikeStr | None = "rf-detr-small.pth"
 
 
 class DinoV3DETRMediumConfig(RFDETRMediumConfig):
@@ -1149,6 +1156,7 @@ class DinoV3DETRMediumConfig(RFDETRMediumConfig):
 
     encoder: DinoV3EncoderName = "dinov3_windowed_small"  # type: ignore[assignment]
     pretrain_weights: PathLikeStr | None = None
+    coco_pretrain_weights: PathLikeStr | None = "rf-detr-medium.pth"
 
 
 class DinoV3DETRLargeConfig(RFDETRLargeConfig):
@@ -1156,6 +1164,7 @@ class DinoV3DETRLargeConfig(RFDETRLargeConfig):
 
     encoder: DinoV3EncoderName = "dinov3_windowed_small"  # type: ignore[assignment]
     pretrain_weights: PathLikeStr | None = None
+    coco_pretrain_weights: PathLikeStr | None = "rf-detr-large-2026.pth"
 
 
 class RFDETRSegPreviewConfig(RFDETRBaseConfig):
@@ -1250,6 +1259,7 @@ class DinoV3DETRSegNanoConfig(RFDETRSegNanoConfig):
     resolution: int = 416
     positional_encoding_size: int = 416 // 16
     pretrain_weights: PathLikeStr | None = None
+    coco_pretrain_weights: PathLikeStr | None = "rf-detr-seg-nano.pt"
 
 
 class DinoV3DETRSegSmallConfig(RFDETRSegSmallConfig):
@@ -1264,6 +1274,7 @@ class DinoV3DETRSegSmallConfig(RFDETRSegSmallConfig):
     resolution: int = 512
     positional_encoding_size: int = 512 // 16
     pretrain_weights: PathLikeStr | None = None
+    coco_pretrain_weights: PathLikeStr | None = "rf-detr-seg-small.pt"
 
 
 class DinoV3DETRSegMediumConfig(RFDETRSegMediumConfig):
@@ -1278,6 +1289,7 @@ class DinoV3DETRSegMediumConfig(RFDETRSegMediumConfig):
     resolution: int = 576
     positional_encoding_size: int = 576 // 16
     pretrain_weights: PathLikeStr | None = None
+    coco_pretrain_weights: PathLikeStr | None = "rf-detr-seg-medium.pt"
 
 
 class DinoV3DETRSegLargeConfig(RFDETRSegLargeConfig):
@@ -1292,6 +1304,7 @@ class DinoV3DETRSegLargeConfig(RFDETRSegLargeConfig):
     resolution: int = 672
     positional_encoding_size: int = 672 // 16
     pretrain_weights: PathLikeStr | None = None
+    coco_pretrain_weights: PathLikeStr | None = "rf-detr-seg-large.pt"
 
 
 class RFDETRSegXLargeConfig(RFDETRBaseConfig):

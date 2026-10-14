@@ -38,6 +38,9 @@ from rfdetr.utilities.state_dict import (
 
 logger = get_logger()
 
+#: State-dict prefix of the backbone encoder, the part an encoder-skipping transfer leaves alone.
+_ENCODER_KEY_PREFIX = "backbone.0.encoder."
+
 __all__ = ["load_pretrain_weights", "apply_lora", "interpolate_position_embeddings"]
 
 _PE_KEY_SUFFIX = "embeddings.position_embeddings"
@@ -169,6 +172,8 @@ def _filter_intentional_keys(keys: list[str]) -> list[str]:
         # MLP projection head, but the current GroupPose inference path no
         # longer consumes it.
         "keypoint_head.keypoint_proj.",
+        # The optional ordinal grading head is new in this fork; no published checkpoint carries it.
+        "ordinal_head.",
     )
 
     def _is_intentional(key: str) -> bool:
@@ -317,6 +322,8 @@ def load_pretrain_weights(
     model_config: ModelConfig,
     *,
     trust: bool = False,
+    weights_path: str | None = None,
+    skip_encoder: bool = False,
 ) -> list[str]:
     """Load pretrained checkpoint weights into *nn_model* in-place.
 
@@ -348,6 +355,12 @@ def load_pretrain_weights(
             argument. Set ``True`` only when ``model_config.pretrain_weights`` points to a
             checkpoint the caller explicitly trusts (mirrors ``RFDETR.from_checkpoint(...,
             trust_checkpoint=True)``); the safe-load default otherwise applies here too.
+        weights_path: Checkpoint to load instead of ``model_config.pretrain_weights``.
+        skip_encoder: Transfer every weight except the backbone encoder's, for a checkpoint whose encoder differs
+            from the model's (an RF-DETR DINOv2 checkpoint loaded into a DINOv3 model). Encoder keys are dropped, the
+            patch-size compatibility check (an encoder property) is skipped, and any remaining key whose shape
+            differs from the model's (for example projector weights when the encoder width differs) is dropped
+            with a warning, so the encoder keeps its own pretrained weights.
 
     Returns:
         List of class name strings from the checkpoint, or an empty list if none are present or if
@@ -358,11 +371,19 @@ def load_pretrain_weights(
         ImportError: If the checkpoint was saved by a ``backbone_lora=True`` run and ``peft`` is not installed.
     """
     mc = model_config
-    if mc.pretrain_weights is None:
+    source = weights_path if weights_path is not None else mc.pretrain_weights
+    if source is None:
         return []
     # `expand_path`/`_coerce_resume_path` pydantic validators on ModelConfig already normalize
     # this field to a `str` at runtime; the `str()` here just satisfies the static `PathLikeStr` type.
-    pretrain_weights = str(mc.pretrain_weights)
+    pretrain_weights = str(source)
+    if weights_path is not None and not os.path.dirname(pretrain_weights):
+        # Field defaults skip the ModelConfig path validator; resolve bare names to the model cache like it does.
+        from rfdetr.assets.model_weights import get_model_cache_dir
+
+        cache_dir = get_model_cache_dir()
+        os.makedirs(cache_dir, exist_ok=True)
+        pretrain_weights = os.path.join(cache_dir, pretrain_weights)
     class_names: list[str] = []
 
     from rfdetr.utilities.io import _safe_torch_load
@@ -433,7 +454,17 @@ def load_pretrain_weights(
                 else:
                     class_names = [name for name in iterator if isinstance(name, str)]
 
-    validate_checkpoint_compatibility(checkpoint, mc)
+    if skip_encoder:
+        encoder_keys = [k for k in checkpoint["model"] if k.startswith(_ENCODER_KEY_PREFIX)]
+        for key in encoder_keys:
+            del checkpoint["model"][key]
+        logger.info(
+            "Transferring %r without its encoder: dropped %d encoder tensors, the model keeps its own encoder weights.",
+            pretrain_weights,
+            len(encoder_keys),
+        )
+    else:
+        validate_checkpoint_compatibility(checkpoint, mc)
 
     # Determine whether the user explicitly set num_classes on the ModelConfig.
     # "num_classes" in model_fields_set is True only when the field was explicitly provided
@@ -631,7 +662,26 @@ def load_pretrain_weights(
         )
         checkpoint["model"].pop("_kp_active_mask", None)
     interpolate_position_embeddings(checkpoint["model"], mc.positional_encoding_size)
+    if skip_encoder:
+        model_shapes = {k: v.shape for k, v in nn_model.state_dict().items()}
+        mismatched = [
+            k for k, v in checkpoint["model"].items() if k in model_shapes and tuple(v.shape) != tuple(model_shapes[k])
+        ]
+        for key in mismatched:
+            del checkpoint["model"][key]
+        if mismatched:
+            logger.warning(
+                "Transfer from %r skipped %d tensor(s) whose shape differs from the model (left at their own init): %s",
+                pretrain_weights,
+                len(mismatched),
+                ", ".join(mismatched[:5]) + (", ..." if len(mismatched) > 5 else ""),
+            )
     incompatible = _load_model_state(nn_model, checkpoint["model"], backbone_lora=mc.backbone_lora)
+    if skip_encoder:
+        # The encoder was dropped on purpose; only report gaps outside it.
+        incompatible = incompatible._replace(
+            missing_keys=[k for k in incompatible.missing_keys if not k.startswith(_ENCODER_KEY_PREFIX)]
+        )
     _warn_on_partial_load(incompatible, pretrain_weights)
 
     if should_restore_config_keypoint_schema and hasattr(nn_model, "reinitialize_keypoint_head"):

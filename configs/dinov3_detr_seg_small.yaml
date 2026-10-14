@@ -1,0 +1,29 @@
+# DinoV3-DETR Seg Small — instance segmentation training configuration (resolution 512, patch 16).
+# The encoder starts from DINOv3 ViT-S/16 (gated on Hugging Face: run `hf auth login` first) and the projector,
+# decoder, mask head and other heads start from the RF-DETR Seg Small COCO checkpoint.
+# Usage:
+#   rfdetr fit --config configs/dinov3_detr_seg_small.yaml
+#   rfdetr fit --config configs/dinov3_detr_seg_small.yaml \
+#     --model.train_config.init_args.dataset_dir /data/my_dataset \
+#     --trainer.devices 4
+
+model:
+  model_config:
+    class_path: rfdetr.config.DinoV3DETRSegSmallConfig
+    init_args:
+      num_classes: 80 # set to your dataset class count
+  train_config:
+    class_path: rfdetr.config.SegmentationTrainConfig
+    init_args:
+      dataset_dir: /data/coco # required: path to your COCO- or YOLO-format segmentation dataset
+      output_dir: output/dinov3_detr_seg_small
+      epochs: 100
+      batch_size: 4
+      num_workers: 4
+      tensorboard: true
+
+# The CLI stops on trainer.max_epochs (Lightning defaults to 1000); keep it equal to train_config.epochs.
+# Checkpoints are written to <default_root_dir>/lightning_logs/version_<n>/checkpoints/.
+trainer:
+  default_root_dir: output/dinov3_detr_seg_small
+  max_epochs: 100

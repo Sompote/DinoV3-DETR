@@ -456,11 +456,21 @@ class RFDETRModelModule(LightningModule):
             MODEL_DEFAULTS if load_encoder_weights else dataclasses.replace(MODEL_DEFAULTS, force_no_pretrain=True)
         )
         self.model = build_model_from_config(model_config, train_config, defaults=defaults)
-        if model_config.pretrain_weights is not None:
+        coco_transfer = model_config.pretrain_weights is None and model_config.coco_pretrain_weights is not None
+        if model_config.pretrain_weights is not None or coco_transfer:
             # Canonical loader handles PE interpolation, PTL .ckpt normalisation,
             # per-group query slicing, class-name extraction, partial-load warnings,
             # and writes any auto-aligned ``num_classes`` back onto ``model_config``.
-            load_pretrain_weights(self.model, self.model_config)
+            # A COCO transfer loads everything except the encoder, which keeps its own pretrained weights.
+            if coco_transfer:
+                load_pretrain_weights(
+                    self.model,
+                    self.model_config,
+                    weights_path=str(model_config.coco_pretrain_weights),
+                    skip_encoder=True,
+                )
+            else:
+                load_pretrain_weights(self.model, self.model_config)
             if model_config.use_grouppose_keypoints:
                 # Older model shims may omit the keypoint reset hook; call it only when implemented.
                 reset_keypoint_gaussian_parameters = getattr(self.model, "reset_keypoint_gaussian_parameters", None)

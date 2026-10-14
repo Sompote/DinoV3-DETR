@@ -1,0 +1,31 @@
+# DinoV3-DETR Small — detection training configuration (resolution 512, patch 16).
+# The encoder starts from DINOv3 ViT-S/16 (gated on Hugging Face: run `hf auth login` first) and the projector,
+# decoder and heads start from the RF-DETR Small COCO checkpoint (model_config.coco_pretrain_weights).
+# Usage:
+#   rfdetr fit --config configs/dinov3_detr_small.yaml
+#   rfdetr fit --config configs/dinov3_detr_small.yaml \
+#     --model.train_config.init_args.dataset_dir /data/my_dataset \
+#     --trainer.devices 4
+
+model:
+  model_config:
+    class_path: rfdetr.config.DinoV3DETRSmallConfig
+    init_args:
+      num_classes: 80 # set to your dataset class count
+      # encoder: dinov3_windowed_base       # larger DINOv3 encoder (ViT-B/16)
+      # coco_pretrain_weights: null         # start the decoder from random weights instead of RF-DETR COCO
+  train_config:
+    class_path: rfdetr.config.TrainConfig
+    init_args:
+      dataset_dir: /data/coco # required: path to your COCO- or YOLO-format dataset
+      output_dir: output/dinov3_detr_small
+      epochs: 100
+      batch_size: 6
+      num_workers: 4
+      tensorboard: true
+
+# The CLI stops on trainer.max_epochs (Lightning defaults to 1000); keep it equal to train_config.epochs.
+# Checkpoints are written to <default_root_dir>/lightning_logs/version_<n>/checkpoints/.
+trainer:
+  default_root_dir: output/dinov3_detr_small
+  max_epochs: 100

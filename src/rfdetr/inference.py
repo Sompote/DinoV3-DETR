@@ -145,8 +145,17 @@ def _build_model_context(model_config: ModelConfig, *, trust_checkpoint: bool = 
     )
 
     class_names: list[str] = []
-    if model_config.pretrain_weights is not None:
-        class_names = load_pretrain_weights(nn_model, model_config, trust=trust_checkpoint)
+    coco_transfer = model_config.pretrain_weights is None and model_config.coco_pretrain_weights is not None
+    if model_config.pretrain_weights is not None or coco_transfer:
+        if coco_transfer:
+            class_names = load_pretrain_weights(
+                nn_model,
+                model_config,
+                weights_path=str(model_config.coco_pretrain_weights),
+                skip_encoder=True,
+            )
+        else:
+            class_names = load_pretrain_weights(nn_model, model_config, trust=trust_checkpoint)
         # ``load_pretrain_weights`` can mutate ``model_config.num_classes`` and
         # ``model_config.num_keypoints_per_class`` when aligning to checkpoint schema.
         # Keep the derived namespace in sync so postprocess and predict() use correct values.

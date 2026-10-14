@@ -69,6 +69,35 @@ The DINOv3 weights are gated on the Hugging Face Hub. Accept the licence on the 
 hf auth login
 ```
 
+## Starting from RF-DETR COCO weights
+
+Every DinoV3-DETR model starts from two pretrained sources by default. The encoder comes from the DINOv3 LVD-1689M weights, and everything after it (the multi-scale projector, the deformable decoder, the object queries and the class, box and mask heads) comes from the RF-DETR checkpoint of the same size trained on COCO. The loader drops the checkpoint's DINOv2 encoder, keeps the DINOv3 encoder, and reuses RF-DETR's own logic for aligning the class head and slicing the query groups, so fine-tuning on a custom dataset starts from a COCO-trained detector instead of a random decoder.
+
+| Model                 | COCO checkpoint transferred |
+| --------------------- | --------------------------- |
+| `DinoV3DETRNano`      | `rf-detr-nano.pth`          |
+| `DinoV3DETRSmall`     | `rf-detr-small.pth`         |
+| `DinoV3DETRMedium`    | `rf-detr-medium.pth`        |
+| `DinoV3DETRLarge`     | `rf-detr-large-2026.pth`    |
+| `DinoV3DETRSegNano`   | `rf-detr-seg-nano.pt`       |
+| `DinoV3DETRSegSmall`  | `rf-detr-seg-small.pt`      |
+| `DinoV3DETRSegMedium` | `rf-detr-seg-medium.pt`     |
+| `DinoV3DETRSegLarge`  | `rf-detr-seg-large.pt`      |
+
+A 6-epoch fine-tune of `DinoV3DETRSegNano` on a synthetic segmentation set of 200 images (four shape classes, one seed, real DINOv3 and RF-DETR weights, RTX 5060 Ti) shows what the warm start buys early in training. Validation mAP50:95 of the EMA weights (`val/ema_mAP_50_95`) reached 0.289 after the second epoch and 0.759 after the sixth with the COCO transfer, against 0.0001 and 0.061 with a random decoder. The synthetic shapes are far easier than real data, so the size of this gap should not be carried over, but the direction is clear.
+
+The checkpoint is downloaded from Roboflow on first use into the model cache (`~/.roboflow/models`, or the directory in `RF_HOME`). Another checkpoint is chosen with `coco_pretrain_weights`, and `coco_pretrain_weights=None` turns the transfer off so that the decoder starts from random weights. The transfer applies only when `pretrain_weights` is `None`, so a DinoV3-DETR checkpoint of your own, passed as `pretrain_weights`, loads in full as usual.
+
+```python
+from rfdetr import DinoV3DETRSmall
+
+model = DinoV3DETRSmall()                                              # DINOv3 encoder + RF-DETR Small COCO decoder
+model = DinoV3DETRSmall(coco_pretrain_weights="rf-detr-medium.pth")    # transfer from another RF-DETR checkpoint
+model = DinoV3DETRSmall(coco_pretrain_weights=None)                    # random decoder
+```
+
+The transferred projector was trained on DINOv2 features, and the DINOv3 features it now receives have the same width (384 for ViT-S) but a different distribution, so the transfer is a warm start for fine-tuning, not a working COCO detector. Predictions before fine-tuning should not be expected to be meaningful. With a wider DINOv3 encoder (ViT-B, L or H+) the projector's input layers no longer match in shape, and the loader skips them with a warning while the decoder and heads still transfer. How much the warm start helps on real data has not been measured yet.
+
 ## Usage
 
 Training follows the RF-DETR API. An object detection model trains on a dataset with box annotations in COCO or YOLO format.
@@ -100,6 +129,51 @@ from rfdetr import DinoV3DETRMedium
 model = DinoV3DETRMedium(encoder="dinov3_windowed_base")
 detections = model.predict("image.jpg", threshold=0.5)
 ```
+
+## Command-line interface
+
+Installing the package with the `cli` extra (`pip install -e ".[train,cli]"`) adds the `rfdetr` command, RF-DETR's Lightning CLI. It has four subcommands, `fit`, `validate`, `test` and `predict`, and reads a YAML file in which `class_path` selects the model configuration, so a DinoV3-DETR model is chosen by naming its config class. Three ready-made configurations ship in `configs/`.
+
+| Config file                               | Model                                     | Task                                   |
+| ----------------------------------------- | ----------------------------------------- | -------------------------------------- |
+| `configs/dinov3_detr_small.yaml`          | `DinoV3DETRSmallConfig`                   | object detection                       |
+| `configs/dinov3_detr_seg_small.yaml`      | `DinoV3DETRSegSmallConfig`                | instance segmentation                  |
+| `configs/dinov3_detr_seg_medium_moe.yaml` | `DinoV3DETRSegMediumConfig` + MoE head    | graded instance segmentation (rock set) |
+
+Any field of the model or training configuration can be overridden on the command line with a dotted path, so one file serves many runs. The dataset path, class count and number of GPUs are the usual overrides. The CLI stops training on `trainer.max_epochs`, not on `train_config.epochs` (which still sets the learning-rate schedule), and Lightning runs 1000 epochs when `max_epochs` is missing, so the three files set it and a change of one should be matched by the other.
+
+```bash
+# train object detection
+rfdetr fit --config configs/dinov3_detr_small.yaml \
+  --model.train_config.init_args.dataset_dir /data/my_dataset \
+  --model.model_config.init_args.num_classes 5 \
+  --model.train_config.init_args.epochs 50 --trainer.max_epochs 50 \
+  --trainer.devices 4
+
+# train instance segmentation with a larger DINOv3 encoder
+rfdetr fit --config configs/dinov3_detr_seg_small.yaml \
+  --model.train_config.init_args.dataset_dir /data/my_seg_dataset \
+  --model.model_config.init_args.encoder dinov3_windowed_base
+
+# train with the MoE ordinal head
+rfdetr fit --config configs/dinov3_detr_seg_medium_moe.yaml \
+  --model.train_config.init_args.dataset_dir /data/rock_dataset
+
+# switch off the RF-DETR COCO transfer
+rfdetr fit --config configs/dinov3_detr_small.yaml \
+  --model.model_config.init_args.coco_pretrain_weights null
+
+# evaluate a trained checkpoint
+rfdetr validate --config configs/dinov3_detr_small.yaml \
+  --ckpt_path output/dinov3_detr_small/lightning_logs/version_0/checkpoints/<checkpoint>.ckpt
+
+# print the fully resolved configuration, including every default
+rfdetr fit --config configs/dinov3_detr_small.yaml --print_config
+```
+
+Every model class in the tables above has a config class of the same name with a `Config` suffix (for example `rfdetr.config.DinoV3DETRSegLargeConfig`), so a configuration for any other size is a copy of one of these files with a different `class_path`. Segmentation models need `rfdetr.config.SegmentationTrainConfig` as the training configuration class, as in the segmentation files. The CLI writes its Lightning checkpoints to `<trainer.default_root_dir>/lightning_logs/version_<n>/checkpoints/`, and each file sets `default_root_dir` to the run's output folder. `rfdetr fit --help` lists every option.
+
+All three files were run end to end with `rfdetr fit` for one epoch on a synthetic dataset (real DINOv3 and RF-DETR COCO weights), and the MoE checkpoint was then scored with `rfdetr validate`. These runs also exposed two problems in the upstream CLI that this repository fixes or works around. jsonargparse 4.52 rejected every `class_path` naming a `ModelConfig` subclass, RF-DETR's own example files included, which `rfdetr.training.cli` now allows explicitly. Lightning also ignores `train_config.epochs` when it decides when to stop, which is why the files set `trainer.max_epochs`.
 
 ## The mixture-of-experts ordinal head
 
@@ -173,9 +247,11 @@ The [RF-DETR documentation](https://rfdetr.roboflow.com) covers dataset formats,
 
 ## Status and limitations
 
-No COCO-pretrained DinoV3-DETR checkpoint exists, for detection or for segmentation. RF-DETR's published checkpoints contain DINOv2 encoder weights, so every DinoV3-DETR model starts from the DINOv3 encoder weights with a randomly initialised projector and decoder. Expect it to need longer training on small datasets than an RF-DETR model fine-tuned from COCO, and do not assume that it is more accurate until it has been measured on your data. We have not yet benchmarked DinoV3-DETR on COCO or any other dataset, so this README reports no accuracy or speed figures.
+No DinoV3-DETR checkpoint trained end to end on COCO exists, for detection or for segmentation. The models start from the DINOv3 encoder weights and the RF-DETR COCO weights for everything else (see above), which is a warm start rather than a trained DinoV3 detector, so expect fine-tuning to be needed even for COCO classes, and do not assume that DinoV3-DETR is more accurate than RF-DETR until it has been measured on your data. We have not yet benchmarked DinoV3-DETR on COCO or any other dataset, so this README reports no accuracy or speed figures.
 
 The port has been checked with randomly initialised encoders on an RTX 3080 (PyTorch 2.8, transformers 5.19). With global attention, the encoder's feature maps match the Hugging Face `DINOv3ViTModel` hidden states exactly (maximum absolute difference 0.0). A windowed layer matches a per-window reference computation to 0.0, and gradient checkpointing reproduces the plain forward pass. All four detection models and all four segmentation models build, run a mixed-precision training step and predict, and the segmentation models return one full-resolution mask per query, and `tests/models/backbone/test_dinov3.py` holds these checks, which pass together with RF-DETR's 117 existing backbone tests. The pretrained DINOv3 weights themselves have not yet been loaded in a test, because that needs gated Hub access. Two RF-DETR features stay DINOv2-only: input channel counts other than three (`num_channels`), and the split-einsum attention rewrite in the Apple Neural Engine export, which is written for DINOv2 layers. ONNX, TensorRT and the other export formats have not yet been run on a DinoV3-DETR model.
+
+Against unmodified RF-DETR, the model, inference, CLI, utility and weight-loading test suites give the same 16 failures in both trees (pre-existing, environment-related), and this repository passes 3,009 tests to RF-DETR's 2,968, the difference being the tests it adds.
 
 The MoE ordinal head has been checked in the same way, on an RTX A4000. Its tests in `tests/models/heads/test_ordinal.py` confirm that the vectorised CORN loss equals the per-threshold reference loop, that the gated mixture stays monotone and equals the gate-weighted expert probabilities, that a single expert reduces to a plain CORN head, and that fusion keeps each detection's best score and sub-class while leaving ungraded classes untouched. A 3-epoch training run of `DinoV3DETRSegNano` with the head on a synthetic four-class segmentation set logged `loss_ordinal` at every decoder layer, moved the gate away from its zero start, saved and reloaded the head exactly, and predicted masks from the reloaded checkpoint. This run checks the wiring only, with a randomly initialised encoder, and says nothing about grading accuracy.
 

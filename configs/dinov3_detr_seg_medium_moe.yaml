@@ -1,0 +1,35 @@
+# DinoV3-DETR Seg Medium with the mixture-of-experts ordinal head — graded instance segmentation.
+# Example label set: rock-mass codes A01..E03 (5 grades x 3 sub-codes, class ids 0-14, grade-major) plus one
+# ungraded class (shotcrete, id 15). The graded classes must be the first ordinal_levels x ordinal_subclasses ids.
+# Judge the head on grading metrics (exact grade, within-one grade, QWK); fusion lowers the validator's COCO mAP.
+# Usage:
+#   rfdetr fit --config configs/dinov3_detr_seg_medium_moe.yaml \
+#     --model.train_config.init_args.dataset_dir /data/rock_dataset
+
+model:
+  model_config:
+    class_path: rfdetr.config.DinoV3DETRSegMediumConfig
+    init_args:
+      num_classes: 16
+      ordinal_levels: 5 # ordered grades A..E; 0 switches the head off
+      ordinal_subclasses: 3 # sub-codes per grade
+      ordinal_experts: 3 # CORN experts mixed by the gate; 1 = single CORN head
+      ordinal_loss_weight: 1.0
+      ordinal_fuse: true
+  train_config:
+    class_path: rfdetr.config.SegmentationTrainConfig
+    init_args:
+      dataset_dir: /data/rock_dataset # required
+      output_dir: output/dinov3_detr_seg_medium_moe
+      epochs: 15 # the grading head over-fits on long schedules
+      batch_size: 8
+      grad_accum_steps: 2
+      lr: 1.0e-4
+      num_workers: 4
+      tensorboard: true
+
+# The CLI stops on trainer.max_epochs (Lightning defaults to 1000); keep it equal to train_config.epochs.
+# Checkpoints are written to <default_root_dir>/lightning_logs/version_<n>/checkpoints/.
+trainer:
+  default_root_dir: output/dinov3_detr_seg_medium_moe
+  max_epochs: 15
