@@ -58,6 +58,9 @@ _SIZE_TO_CONFIG: dict[str, dict[str, Any]] = {
     ),
 }
 
+#: Patch size of every DINOv3 ViT.
+_PATCH_SIZE = 16
+
 _SIZE_TO_HUB_ID: dict[str, str] = {
     "small": "facebook/dinov3-vits16-pretrain-lvd1689m",
     "splus": "facebook/dinov3-vits16plus-pretrain-lvd1689m",
@@ -90,7 +93,7 @@ def build_dinov3_config(size: str, drop_path_rate: float = 0.0) -> DINOv3ViTConf
     if size not in _SIZE_TO_CONFIG:
         raise ValueError(f"Unknown DINOv3 size {size!r}; expected one of {sorted(_SIZE_TO_CONFIG)}.")
     return DINOv3ViTConfig(
-        patch_size=16,
+        patch_size=_PATCH_SIZE,
         num_register_tokens=4,
         drop_path_rate=drop_path_rate,
         pos_embed_shift=None,
@@ -162,7 +165,7 @@ class DinoV3(nn.Module):
         for layer in self.blocks:
             layer.drop_path = _DropPath(drop_path_rate)
 
-        self.patch_size = int(config.patch_size)
+        self.patch_size = _PATCH_SIZE
         self.num_prefix_tokens = 1 + config.num_register_tokens
         self.num_windows = num_windows if use_windowed_attn else 1
         self.out_feature_indexes = list(out_feature_indexes)
